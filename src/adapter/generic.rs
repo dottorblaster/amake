@@ -1,4 +1,4 @@
-use super::sandbox::start_sandboxed_command;
+use super::sandbox::{apply_workdir, start_sandboxed_command};
 use super::Adapter;
 use crate::config::Task;
 use crate::sandbox::SandboxConfig;
@@ -53,11 +53,7 @@ impl Adapter for GenericPassthrough {
         cmd.args(&task.extra_args);
         cmd.arg(&task.prompt);
 
-        if !sandboxed {
-            if let Some(dir) = workdir {
-                cmd.current_dir(dir);
-            }
-        }
+        apply_workdir(&mut cmd, sandboxed, workdir);
 
         cmd
     }

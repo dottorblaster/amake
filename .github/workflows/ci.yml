@@ -16,8 +16,13 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --verbose

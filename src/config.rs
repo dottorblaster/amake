@@ -15,7 +15,7 @@ pub struct Defaults {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum SandboxOrBool {
-    Config(SandboxConfig),
+    Config(Box<SandboxConfig>),
     Disabled(bool),
 }
 
@@ -53,7 +53,7 @@ pub struct Task {
 impl From<RawTask> for Task {
     fn from(raw: RawTask) -> Self {
         let sandbox = raw.sandbox.map(|s| match s {
-            SandboxOrBool::Config(cfg) => Some(cfg),
+            SandboxOrBool::Config(cfg) => Some(*cfg),
             SandboxOrBool::Disabled(false) => None,
             SandboxOrBool::Disabled(true) => Some(SandboxConfig::default()),
         });
