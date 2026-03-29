@@ -1,5 +1,6 @@
 mod adapter;
 mod config;
+mod editor;
 mod error;
 mod runner;
 mod sandbox;
@@ -38,6 +39,10 @@ enum Commands {
         /// Set a variable (repeatable), e.g. --var key=value
         #[arg(long = "var", value_name = "KEY=VALUE")]
         vars: Vec<String>,
+
+        /// Open $EDITOR to input a variable value (repeatable), e.g. --edit-var description
+        #[arg(long = "edit-var", value_name = "NAME")]
+        edit_vars: Vec<String>,
 
         /// Path to Amakefile (skip auto-discovery)
         #[arg(short = 'f', long = "file")]
@@ -82,12 +87,19 @@ fn run() -> Result<(), Error> {
             dry_run,
             keep_going,
             vars,
+            edit_vars,
             file,
             sandbox,
             no_sandbox,
         } => {
             let config = load_config(file)?;
-            let vars = parse_vars(&vars)?;
+            let mut vars = parse_vars(&vars)?;
+
+            for name in &edit_vars {
+                eprintln!("✎ opening editor for variable: {name}");
+                let value = editor::edit_variable(name)?;
+                vars.insert(name.clone(), value);
+            }
 
             runner::run(
                 &config,

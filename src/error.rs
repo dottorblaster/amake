@@ -46,6 +46,9 @@ pub enum Error {
     #[error("task {task:?} was terminated by a signal")]
     TaskSignaled { task: String },
 
+    #[error("editor failed: {reason}")]
+    EditorFailed { reason: String },
+
     #[error("clampdown not found — install it from https://github.com/89luca89/clampdown or disable sandbox with --no-sandbox")]
     ClampdownNotFound,
 
