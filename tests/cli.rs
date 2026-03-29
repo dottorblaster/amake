@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use tempfile::TempDir;
 
 fn amake() -> Command {
@@ -561,4 +562,217 @@ prompt = "Hello {{env.AMAKE_TEST_NAME}}"
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello TestUser"));
+}
+
+// ── Editor variable (--edit-var) ──
+
+/// Helper: create a fake editor script that writes known content to the file it receives.
+fn create_fake_editor(dir: &TempDir, content: &str) -> std::path::PathBuf {
+    let script = dir.path().join("fake-editor.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat > \"$1\" <<'AMAKE_EOF'\n{content}\nAMAKE_EOF\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[test]
+fn edit_var_populates_variable() {
+    let dir = TempDir::new().unwrap();
+    let editor = create_fake_editor(&dir, "world from editor");
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "echo"
+
+[tasks.greet]
+prompt = "Hello {{vars.name}}"
+"#,
+    );
+
+    amake()
+        .env("EDITOR", editor.to_str().unwrap())
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--edit-var",
+            "name",
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hello world from editor"));
+}
+
+#[test]
+fn edit_var_strips_comment_lines() {
+    let dir = TempDir::new().unwrap();
+    // Editor that preserves the comment header and appends content
+    let script = dir.path().join("fake-editor.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\necho '# this is a comment' >> \"$1\"\necho 'actual value' >> \"$1\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "echo"
+
+[tasks.t]
+prompt = "[{{vars.x}}]"
+"#,
+    );
+
+    amake()
+        .env("EDITOR", script.to_str().unwrap())
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--edit-var",
+            "x",
+            "t",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[actual value]"));
+}
+
+#[test]
+fn edit_var_dry_run() {
+    let dir = TempDir::new().unwrap();
+    let editor = create_fake_editor(&dir, "edited content");
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "echo"
+
+[tasks.t]
+prompt = "got: {{vars.msg}}"
+"#,
+    );
+
+    amake()
+        .env("EDITOR", editor.to_str().unwrap())
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--edit-var",
+            "msg",
+            "t",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("got: edited content"));
+}
+
+#[test]
+fn edit_var_overrides_inline_var() {
+    let dir = TempDir::new().unwrap();
+    let editor = create_fake_editor(&dir, "from editor");
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "echo"
+
+[tasks.t]
+prompt = "{{vars.x}}"
+"#,
+    );
+
+    // --var first, then --edit-var should override
+    amake()
+        .env("EDITOR", editor.to_str().unwrap())
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--var",
+            "x=from cli",
+            "--edit-var",
+            "x",
+            "t",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from editor"));
+}
+
+#[test]
+fn edit_var_editor_failure_errors() {
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("bad-editor.sh");
+    fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.t]
+tool = "echo"
+prompt = "{{vars.x}}"
+"#,
+    );
+
+    amake()
+        .env("EDITOR", script.to_str().unwrap())
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--edit-var",
+            "x",
+            "t",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("editor"));
+}
+
+#[test]
+fn edit_var_multiline_content() {
+    let dir = TempDir::new().unwrap();
+    let editor = create_fake_editor(&dir, "line one\nline two\nline three");
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "echo"
+
+[tasks.t]
+prompt = "{{vars.body}}"
+"#,
+    );
+
+    amake()
+        .env("EDITOR", editor.to_str().unwrap())
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--edit-var",
+            "body",
+            "t",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("line one")
+                .and(predicate::str::contains("line two"))
+                .and(predicate::str::contains("line three")),
+        );
 }

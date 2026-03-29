@@ -87,10 +87,22 @@ Prompts support `{{...}}` placeholders from three sources:
 | Syntax | Source |
 |---|---|
 | `{{tasks.foo.stdout}}` | Captured output from task `foo` (must be in `depends`, must have `capture = true`) |
-| `{{vars.name}}` | Passed via `--var name=value` on the CLI |
+| `{{vars.name}}` | Passed via `--var name=value` or `--edit-var name` on the CLI |
 | `{{env.HOME}}` | Read from the environment |
 
 Missing variables are a hard error — no silent empty strings.
+
+### Editor-based variables
+
+For longer or multiline content, use `--edit-var` instead of `--var`. This opens your `$VISUAL` or `$EDITOR` (falling back to `vi`) with a temporary file. Write the value, save, and close — the content becomes the variable's value.
+
+```
+amake run review-pr --edit-var focus
+```
+
+The temporary file starts with comment lines (prefixed `#`) that are stripped from the final value. If you specify multiple `--edit-var` flags, each one opens the editor sequentially, one at a time.
+
+If both `--var name=value` and `--edit-var name` are given, the editor value wins.
 
 ## Built-in adapters
 
@@ -169,6 +181,7 @@ amake run <TASKS>... [OPTIONS]
   --dry-run              Print commands without running them
   -k, --keep-going       Don't stop on first failure
   --var <KEY=VALUE>      Set a template variable (repeatable)
+  --edit-var <NAME>      Open $EDITOR to input a variable value (repeatable)
   -f, --file <PATH>      Explicit Amakefile path
   --sandbox              Force sandbox for all tasks
   --no-sandbox           Disable sandbox for all tasks
