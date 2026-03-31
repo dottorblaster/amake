@@ -37,15 +37,11 @@ fn help_flag() {
 
 #[test]
 fn adapters_lists_builtins() {
-    amake()
-        .arg("adapters")
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("claude-code")
-                .and(predicate::str::contains("aider"))
-                .and(predicate::str::contains("copilot")),
-        );
+    amake().arg("adapters").assert().success().stdout(
+        predicate::str::contains("claude-code")
+            .and(predicate::str::contains("aider"))
+            .and(predicate::str::contains("copilot")),
+    );
 }
 
 // ── List subcommand ──
@@ -82,10 +78,7 @@ prompt = "Build the project"
         .args(["list", "-f", dir.path().join("Amakefile").to_str().unwrap()])
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("hello")
-                .and(predicate::str::contains("build")),
-        );
+        .stdout(predicate::str::contains("hello").and(predicate::str::contains("build")));
 }
 
 #[test]
@@ -498,8 +491,7 @@ prompt = "right"
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("custom")
-                .and(predicate::str::contains("discovered").not()),
+            predicate::str::contains("custom").and(predicate::str::contains("discovered").not()),
         );
 }
 
@@ -571,9 +563,7 @@ fn create_fake_editor(dir: &TempDir, content: &str) -> std::path::PathBuf {
     let script = dir.path().join("fake-editor.sh");
     fs::write(
         &script,
-        format!(
-            "#!/bin/sh\ncat > \"$1\" <<'AMAKE_EOF'\n{content}\nAMAKE_EOF\n"
-        ),
+        format!("#!/bin/sh\ncat > \"$1\" <<'AMAKE_EOF'\n{content}\nAMAKE_EOF\n"),
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();

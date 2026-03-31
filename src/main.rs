@@ -158,12 +158,7 @@ fn list_tasks(config: &Config) {
         return;
     }
 
-    let max_name = config
-        .tasks
-        .keys()
-        .map(|n| n.len())
-        .max()
-        .unwrap_or(0);
+    let max_name = config.tasks.keys().map(|n| n.len()).max().unwrap_or(0);
 
     for (name, task) in &config.tasks {
         let tool = task

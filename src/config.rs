@@ -88,11 +88,10 @@ pub struct Config {
 
 impl Config {
     pub fn from_str(s: &str, path: &Path) -> Result<Self, Error> {
-        let raw: RawConfig =
-            toml::from_str(s).map_err(|e| Error::ConfigParse {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+        let raw: RawConfig = toml::from_str(s).map_err(|e| Error::ConfigParse {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
 
         let tasks = raw
             .tasks
@@ -145,7 +144,6 @@ impl Config {
         }
 
         let resolved = match &task.sandbox {
-
             Some(None) if !force_sandbox => None,
 
             Some(Some(cfg)) => Some(cfg.clone()),

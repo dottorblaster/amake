@@ -1,5 +1,5 @@
-use super::sandbox::{apply_workdir, start_sandboxed_command};
 use super::Adapter;
+use super::sandbox::{apply_workdir, start_sandboxed_command};
 use crate::config::Task;
 use crate::sandbox::SandboxConfig;
 use std::path::Path;
@@ -34,7 +34,9 @@ impl Adapter for CopilotAdapter {
         );
 
         if auto_approve {
-            eprintln!("warning: auto_approve is set for copilot but no known flag exists — ignoring");
+            eprintln!(
+                "warning: auto_approve is set for copilot but no known flag exists — ignoring"
+            );
         }
 
         cmd.args(["copilot", "suggest", "-t", "shell"]);

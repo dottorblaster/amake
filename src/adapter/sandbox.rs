@@ -39,9 +39,7 @@ pub fn start_sandboxed_command(
 /// Sets `current_dir` on `cmd` when not running inside a sandbox.
 /// When sandboxed, `clampdown --workdir` handles the directory instead.
 pub fn apply_workdir(cmd: &mut Command, sandboxed: bool, workdir: Option<&Path>) {
-    if !sandboxed
-        && let Some(dir) = workdir
-    {
+    if !sandboxed && let Some(dir) = workdir {
         cmd.current_dir(dir);
     }
 }

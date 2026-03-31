@@ -1,5 +1,5 @@
-use super::sandbox::{apply_workdir, start_sandboxed_command};
 use super::Adapter;
+use super::sandbox::{apply_workdir, start_sandboxed_command};
 use crate::config::Task;
 use crate::sandbox::SandboxConfig;
 use std::path::Path;
