@@ -6,10 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read as _;
 use std::process::Stdio;
 
-pub fn resolve_execution_order(
-    config: &Config,
-    targets: &[String],
-) -> Result<Vec<String>, Error> {
+pub fn resolve_execution_order(config: &Config, targets: &[String]) -> Result<Vec<String>, Error> {
     for target in targets {
         if !config.tasks.contains_key(target) {
             return Err(Error::UnknownTask(target.clone()));
@@ -23,9 +20,10 @@ pub fn resolve_execution_order(
         if needed.contains(&name) {
             continue;
         }
-        let task = config.tasks.get(&name).ok_or_else(|| {
-            Error::UnknownTask(name.clone())
-        })?;
+        let task = config
+            .tasks
+            .get(&name)
+            .ok_or_else(|| Error::UnknownTask(name.clone()))?;
         needed.insert(name);
         for dep in &task.depends {
             queue.push_back(dep.clone());
@@ -105,11 +103,7 @@ pub struct RunOptions {
     pub vars: BTreeMap<String, String>,
 }
 
-pub fn run(
-    config: &Config,
-    targets: &[String],
-    opts: &RunOptions,
-) -> Result<(), Error> {
+pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(), Error> {
     let order = resolve_execution_order(config, targets)?;
 
     let capture_flags: BTreeMap<String, bool> = config
@@ -163,13 +157,15 @@ pub fn run(
 
         eprintln!("▶ running task: {task_name} (tool: {tool})");
 
+        let cmd_string = format_command(&cmd);
+
         match execute_task(task_name, cmd, task.capture)? {
             TaskResult::Success(output) => {
                 if let Some(stdout) = output {
                     task_outputs.insert(task_name.clone(), stdout);
                 }
             }
-            TaskResult::Failed(code) => {
+            TaskResult::Failed(code, stderr_tail) => {
                 if opts.keep_going {
                     eprintln!("✗ task {task_name:?} failed (exit code {code}), continuing...");
                     failures.push(task_name.clone());
@@ -177,16 +173,20 @@ pub fn run(
                     return Err(Error::TaskFailed {
                         task: task_name.clone(),
                         code,
+                        command: Some(cmd_string),
+                        stderr_tail: Some(stderr_tail),
                     });
                 }
             }
-            TaskResult::Signaled => {
+            TaskResult::Signaled(stderr_tail) => {
                 if opts.keep_going {
                     eprintln!("✗ task {task_name:?} was killed by a signal, continuing...");
                     failures.push(task_name.clone());
                 } else {
                     return Err(Error::TaskSignaled {
                         task: task_name.clone(),
+                        command: Some(cmd_string),
+                        stderr_tail: Some(stderr_tail),
                     });
                 }
             }
@@ -202,6 +202,8 @@ pub fn run(
         return Err(Error::TaskFailed {
             task: failures.join(", "),
             code: 1,
+            command: None,
+            stderr_tail: None,
         });
     }
 
@@ -210,8 +212,8 @@ pub fn run(
 
 enum TaskResult {
     Success(Option<String>),
-    Failed(i32),
-    Signaled,
+    Failed(i32, String),
+    Signaled(String),
 }
 
 fn execute_task(
@@ -222,7 +224,7 @@ fn execute_task(
     if capture {
         cmd.stdout(Stdio::piped());
     }
-    cmd.stderr(Stdio::inherit());
+    cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| {
         eprintln!("✗ failed to start task {task_name:?}: {e}");
@@ -239,19 +241,37 @@ fn execute_task(
         None
     };
 
+    let mut stderr_output = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        stderr.read_to_string(&mut stderr_output)?;
+    }
+
+    // Always forward stderr so the user sees it in real-time context
+    if !stderr_output.is_empty() {
+        eprint!("{stderr_output}");
+    }
+
     let status = child.wait()?;
 
     if status.success() {
         Ok(TaskResult::Success(stdout))
     } else {
+        let tail = stderr_tail(&stderr_output, 20);
         match status.code() {
-            Some(code) => Ok(TaskResult::Failed(code)),
-            None => Ok(TaskResult::Signaled),
+            Some(code) => Ok(TaskResult::Failed(code, tail)),
+            None => Ok(TaskResult::Signaled(tail)),
         }
     }
 }
 
-fn print_command(task_name: &str, cmd: &std::process::Command) {
+/// Return the last `n` lines of `s`, trimmed.
+fn stderr_tail(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+fn format_command(cmd: &std::process::Command) -> String {
     let program = cmd.get_program().to_string_lossy();
     let args: Vec<String> = cmd
         .get_args()
@@ -265,7 +285,11 @@ fn print_command(task_name: &str, cmd: &std::process::Command) {
         })
         .collect();
 
-    println!("[{task_name}] {program} {}", args.join(" "));
+    format!("{program} {}", args.join(" "))
+}
+
+fn print_command(task_name: &str, cmd: &std::process::Command) {
+    println!("[{task_name}] {}", format_command(cmd));
 }
 
 #[cfg(test)]
