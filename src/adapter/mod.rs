@@ -33,7 +33,10 @@ pub struct AdapterRegistry {
 impl AdapterRegistry {
     pub fn new() -> Self {
         let mut adapters: BTreeMap<String, Box<dyn Adapter>> = BTreeMap::new();
-        adapters.insert("claude-code".into(), Box::new(claude_code::ClaudeCodeAdapter));
+        adapters.insert(
+            "claude-code".into(),
+            Box::new(claude_code::ClaudeCodeAdapter),
+        );
         adapters.insert("aider".into(), Box::new(aider::AiderAdapter));
         adapters.insert("copilot".into(), Box::new(copilot::CopilotAdapter));
         Self { adapters }
@@ -109,7 +112,10 @@ mod tests {
         let task = make_task("Hello");
         let cmd = adapter.build_command(&task, None, true, None);
         let args = get_args(&cmd);
-        assert_eq!(args, &["--dangerously-skip-permissions", "--print", "Hello"]);
+        assert_eq!(
+            args,
+            &["--dangerously-skip-permissions", "--print", "Hello"]
+        );
     }
 
     #[test]
@@ -119,7 +125,10 @@ mod tests {
         task.files = vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")];
         let cmd = adapter.build_command(&task, None, false, None);
         let args = get_args(&cmd);
-        assert_eq!(args, &["--print", "--file", "a.rs", "--file", "b.rs", "Hello"]);
+        assert_eq!(
+            args,
+            &["--print", "--file", "a.rs", "--file", "b.rs", "Hello"]
+        );
     }
 
     #[test]
@@ -140,7 +149,17 @@ mod tests {
         task.extra_args = vec!["--model".into(), "gpt-4".into()];
         let cmd = adapter.build_command(&task, None, false, None);
         let args = get_args(&cmd);
-        assert_eq!(args, &["--message", "Fix it", "--file", "src/main.rs", "--model", "gpt-4"]);
+        assert_eq!(
+            args,
+            &[
+                "--message",
+                "Fix it",
+                "--file",
+                "src/main.rs",
+                "--model",
+                "gpt-4"
+            ]
+        );
     }
 
     #[test]
@@ -179,16 +198,24 @@ mod tests {
         let cmd = adapter.build_command(&task, Some(&workdir), true, Some(&sandbox));
 
         assert_eq!(cmd.get_program(), "clampdown");
-        let args: Vec<String> = get_args(&cmd).iter().map(|a| a.to_string_lossy().into()).collect();
+        let args: Vec<String> = get_args(&cmd)
+            .iter()
+            .map(|a| a.to_string_lossy().into())
+            .collect();
         assert_eq!(
             args,
             &[
                 "claude",
-                "--agent-policy", "deny",
-                "--agent-allow", "api.github.com",
-                "--memory", "4g",
-                "--cpus", "4",
-                "--workdir", "/project",
+                "--agent-policy",
+                "deny",
+                "--agent-allow",
+                "api.github.com",
+                "--memory",
+                "4g",
+                "--cpus",
+                "4",
+                "--workdir",
+                "/project",
                 "--",
                 "--dangerously-skip-permissions",
                 "--print",

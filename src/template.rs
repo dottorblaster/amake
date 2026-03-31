@@ -85,21 +85,22 @@ fn resolve_variable(
             });
         }
 
-        task_outputs.get(dep_name).cloned().ok_or_else(|| {
-            Error::InvalidTaskReference {
+        task_outputs
+            .get(dep_name)
+            .cloned()
+            .ok_or_else(|| Error::InvalidTaskReference {
                 task: task_name.into(),
                 dependency: dep_name.into(),
                 reason: format!("{dep_name:?} has not produced output yet"),
-            }
-        })
+            })
     } else if let Some(name) = var.strip_prefix("vars.") {
-        vars.get(name).cloned().ok_or_else(|| {
-            Error::UnresolvedVariable {
+        vars.get(name)
+            .cloned()
+            .ok_or_else(|| Error::UnresolvedVariable {
                 task: task_name.into(),
                 variable: var.into(),
                 hint: format!("pass it with --var {name}=\"...\""),
-            }
-        })
+            })
     } else if let Some(name) = var.strip_prefix("env.") {
         std::env::var(name).map_err(|_| Error::UnresolvedVariable {
             task: task_name.into(),
@@ -133,7 +134,15 @@ mod tests {
 
     #[test]
     fn no_placeholders() {
-        let result = render("Hello world", "test", &empty_outputs(), &empty_vars(), &[], &empty_captures()).unwrap();
+        let result = render(
+            "Hello world",
+            "test",
+            &empty_outputs(),
+            &empty_vars(),
+            &[],
+            &empty_captures(),
+        )
+        .unwrap();
         assert_eq!(result, "Hello world");
     }
 
@@ -141,7 +150,15 @@ mod tests {
     fn vars_interpolation() {
         let mut vars = BTreeMap::new();
         vars.insert("name".into(), "Alice".into());
-        let result = render("Hello {{vars.name}}", "test", &empty_outputs(), &vars, &[], &empty_captures()).unwrap();
+        let result = render(
+            "Hello {{vars.name}}",
+            "test",
+            &empty_outputs(),
+            &vars,
+            &[],
+            &empty_captures(),
+        )
+        .unwrap();
         assert_eq!(result, "Hello Alice");
     }
 
@@ -149,7 +166,15 @@ mod tests {
     fn env_interpolation() {
         // SAFETY: test-only, single-threaded test runner
         unsafe { std::env::set_var("AMAKE_TEST_VAR", "42") };
-        let result = render("Value: {{env.AMAKE_TEST_VAR}}", "test", &empty_outputs(), &empty_vars(), &[], &empty_captures()).unwrap();
+        let result = render(
+            "Value: {{env.AMAKE_TEST_VAR}}",
+            "test",
+            &empty_outputs(),
+            &empty_vars(),
+            &[],
+            &empty_captures(),
+        )
+        .unwrap();
         assert_eq!(result, "Value: 42");
         unsafe { std::env::remove_var("AMAKE_TEST_VAR") };
     }
@@ -176,7 +201,14 @@ mod tests {
 
     #[test]
     fn missing_var_errors() {
-        let result = render("Hello {{vars.missing}}", "test", &empty_outputs(), &empty_vars(), &[], &empty_captures());
+        let result = render(
+            "Hello {{vars.missing}}",
+            "test",
+            &empty_outputs(),
+            &empty_vars(),
+            &[],
+            &empty_captures(),
+        );
         assert!(matches!(result, Err(Error::UnresolvedVariable { .. })));
     }
 
@@ -216,13 +248,28 @@ mod tests {
     fn whitespace_in_placeholder() {
         let mut vars = BTreeMap::new();
         vars.insert("x".into(), "yes".into());
-        let result = render("{{ vars.x }}", "test", &empty_outputs(), &vars, &[], &empty_captures()).unwrap();
+        let result = render(
+            "{{ vars.x }}",
+            "test",
+            &empty_outputs(),
+            &vars,
+            &[],
+            &empty_captures(),
+        )
+        .unwrap();
         assert_eq!(result, "yes");
     }
 
     #[test]
     fn unknown_namespace_errors() {
-        let result = render("{{foo.bar}}", "test", &empty_outputs(), &empty_vars(), &[], &empty_captures());
+        let result = render(
+            "{{foo.bar}}",
+            "test",
+            &empty_outputs(),
+            &empty_vars(),
+            &[],
+            &empty_captures(),
+        );
         assert!(matches!(result, Err(Error::UnresolvedVariable { .. })));
     }
 
@@ -231,7 +278,15 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("a".into(), "1".into());
         vars.insert("b".into(), "2".into());
-        let result = render("{{vars.a}} and {{vars.b}}", "test", &empty_outputs(), &vars, &[], &empty_captures()).unwrap();
+        let result = render(
+            "{{vars.a}} and {{vars.b}}",
+            "test",
+            &empty_outputs(),
+            &vars,
+            &[],
+            &empty_captures(),
+        )
+        .unwrap();
         assert_eq!(result, "1 and 2");
     }
 }
