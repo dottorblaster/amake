@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::template;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::Read as _;
+use std::io::{BufRead, BufReader, Read as _};
 use std::process::Stdio;
 
 pub fn resolve_execution_order(config: &Config, targets: &[String]) -> Result<Vec<String>, Error> {
@@ -231,6 +231,20 @@ fn execute_task(
         e
     })?;
 
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || -> std::io::Result<String> {
+            let reader = BufReader::new(stderr);
+            let mut accumulated = String::new();
+            for line in reader.lines() {
+                let line = line?;
+                eprintln!("{line}");
+                accumulated.push_str(&line);
+                accumulated.push('\n');
+            }
+            Ok(accumulated)
+        })
+    });
+
     let stdout = if capture {
         let mut output = String::new();
         if let Some(mut stdout) = child.stdout.take() {
@@ -241,15 +255,10 @@ fn execute_task(
         None
     };
 
-    let mut stderr_output = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        stderr.read_to_string(&mut stderr_output)?;
-    }
-
-    // Always forward stderr so the user sees it in real-time context
-    if !stderr_output.is_empty() {
-        eprint!("{stderr_output}");
-    }
+    let stderr_output = match stderr_handle {
+        Some(handle) => handle.join().expect("stderr reader thread panicked")?,
+        None => String::new(),
+    };
 
     let status = child.wait()?;
 
@@ -275,17 +284,23 @@ fn format_command(cmd: &std::process::Command) -> String {
     let program = cmd.get_program().to_string_lossy();
     let args: Vec<String> = cmd
         .get_args()
-        .map(|a| {
-            let s = a.to_string_lossy();
-            if s.contains(' ') || s.contains('"') || s.is_empty() {
-                format!("{s:?}")
-            } else {
-                s.into_owned()
-            }
-        })
+        .map(|a| shell_quote(&a.to_string_lossy()))
         .collect();
 
     format!("{program} {}", args.join(" "))
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    let safe = s
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '=' | ':' | ','));
+    if safe {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn print_command(task_name: &str, cmd: &std::process::Command) {
