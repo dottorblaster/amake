@@ -849,3 +849,192 @@ prompt = "{{vars.body}}"
                 .and(predicate::str::contains("line three")),
         );
 }
+
+// ── Timeout / retry ──
+
+#[test]
+fn task_timeout_kills_runaway_child() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.slow]
+tool = "sleep"
+prompt = "10"
+timeout = 1
+"#,
+    );
+
+    let start = std::time::Instant::now();
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "slow",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("timed out"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "timeout should fire well before the 10s sleep completes"
+    );
+}
+
+#[test]
+fn task_retry_eventually_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let marker = dir.path().join("marker");
+    let script = format!(
+        "test -f {marker} || (touch {marker}; exit 1)",
+        marker = marker.display()
+    );
+    setup_amakefile(
+        &dir,
+        &format!(
+            r#"
+[tasks.flaky]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", {script:?}]
+
+[tasks.flaky.retry]
+attempts = 2
+initial_delay = 1
+"#,
+        ),
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "flaky",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("retrying"));
+}
+
+#[test]
+fn retry_exhausted_reports_attempt_count() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.always-fails]
+tool = "false"
+prompt = ""
+
+[tasks.always-fails.retry]
+attempts = 2
+initial_delay = 1
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "always-fails",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("after 2 attempts").and(predicate::str::contains("retrying")),
+        );
+}
+
+#[test]
+fn timeout_with_on_timeout_false_does_not_retry() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.slow]
+tool = "sleep"
+prompt = "10"
+timeout = 1
+
+[tasks.slow.retry]
+attempts = 3
+on_timeout = false
+"#,
+    );
+
+    let start = std::time::Instant::now();
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "slow",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("timed out"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "should not retry on timeout (would take 1s + backoff each time)"
+    );
+}
+
+#[test]
+fn dry_run_annotates_timeout_and_retry() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.t]
+tool = "echo"
+prompt = "hi"
+timeout = 60
+
+[tasks.t.retry]
+attempts = 3
+backoff = "exponential"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "t",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("timeout 60s").and(predicate::str::contains("retry 3x")));
+}
+
+#[test]
+fn rejects_zero_attempts() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.t]
+tool = "echo"
+prompt = "hi"
+
+[tasks.t.retry]
+attempts = 0
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "t",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid retry config"));
+}

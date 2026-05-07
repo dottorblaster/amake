@@ -89,6 +89,8 @@ mod tests {
             workdir: None,
             sandbox: None,
             extra_args: vec![],
+            timeout: None,
+            retry: None,
         }
     }
 

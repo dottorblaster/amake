@@ -3,6 +3,7 @@ use crate::sandbox::SandboxConfig;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
@@ -10,6 +11,39 @@ pub struct Defaults {
     pub tool: Option<String>,
     pub workdir: Option<PathBuf>,
     pub sandbox: Option<SandboxConfig>,
+    pub timeout: Option<u64>,
+    pub retry: Option<RetryConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BackoffStrategy {
+    Fixed,
+    Linear,
+    #[default]
+    Exponential,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct RetryConfig {
+    pub attempts: u32,
+    pub backoff: BackoffStrategy,
+    pub initial_delay: u64,
+    pub max_delay: u64,
+    pub on_timeout: bool,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            attempts: 1,
+            backoff: BackoffStrategy::Exponential,
+            initial_delay: 1,
+            max_delay: 30,
+            on_timeout: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +69,8 @@ struct RawTask {
     sandbox: Option<SandboxOrBool>,
     #[serde(default)]
     extra_args: Vec<String>,
+    timeout: Option<u64>,
+    retry: Option<RetryConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +84,8 @@ pub struct Task {
     pub workdir: Option<PathBuf>,
     pub sandbox: Option<Option<SandboxConfig>>,
     pub extra_args: Vec<String>,
+    pub timeout: Option<u64>,
+    pub retry: Option<RetryConfig>,
 }
 
 impl From<RawTask> for Task {
@@ -68,6 +106,8 @@ impl From<RawTask> for Task {
             workdir: raw.workdir,
             sandbox,
             extra_args: raw.extra_args,
+            timeout: raw.timeout,
+            retry: raw.retry,
         }
     }
 }
@@ -96,11 +136,20 @@ impl Config {
             source: e,
         })?;
 
-        let tasks = raw
+        let tasks: BTreeMap<String, Task> = raw
             .tasks
             .into_iter()
             .map(|(name, raw_task)| (name, Task::from(raw_task)))
             .collect();
+
+        for (name, task) in &tasks {
+            if let Some(retry) = &task.retry {
+                validate_retry(name, retry)?;
+            }
+        }
+        if let Some(retry) = &raw.defaults.retry {
+            validate_retry("<defaults>", retry)?;
+        }
 
         let vars = raw
             .vars
@@ -170,6 +219,35 @@ impl Config {
             resolved
         }
     }
+
+    pub fn effective_timeout(&self, task: &Task) -> Option<Duration> {
+        task.timeout
+            .or(self.defaults.timeout)
+            .map(Duration::from_secs)
+    }
+
+    pub fn effective_retry(&self, task: &Task) -> Option<RetryConfig> {
+        task.retry.clone().or_else(|| self.defaults.retry.clone())
+    }
+}
+
+fn validate_retry(scope: &str, retry: &RetryConfig) -> Result<(), Error> {
+    if retry.attempts == 0 {
+        return Err(Error::InvalidRetryConfig {
+            task: scope.into(),
+            reason: "attempts must be >= 1".into(),
+        });
+    }
+    if retry.max_delay < retry.initial_delay {
+        return Err(Error::InvalidRetryConfig {
+            task: scope.into(),
+            reason: format!(
+                "max_delay ({}) must be >= initial_delay ({})",
+                retry.max_delay, retry.initial_delay
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn substitute_commands(name: &str, value: &str) -> Result<String, Error> {
@@ -453,5 +531,125 @@ prompt = "Test"
         let effective = cfg.effective_sandbox(task, false, false).unwrap();
         assert_eq!(effective.agent_policy.as_deref(), Some("deny"));
         assert_eq!(effective.memory.as_deref(), Some("8g"));
+    }
+
+    #[test]
+    fn parses_full_retry_config() {
+        let toml = r#"
+[tasks.t]
+prompt = "x"
+timeout = 90
+
+[tasks.t.retry]
+attempts = 4
+backoff = "linear"
+initial_delay = 2
+max_delay = 20
+on_timeout = false
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        let task = &cfg.tasks["t"];
+        assert_eq!(task.timeout, Some(90));
+        let retry = task.retry.as_ref().unwrap();
+        assert_eq!(retry.attempts, 4);
+        assert_eq!(retry.backoff, BackoffStrategy::Linear);
+        assert_eq!(retry.initial_delay, 2);
+        assert_eq!(retry.max_delay, 20);
+        assert!(!retry.on_timeout);
+    }
+
+    #[test]
+    fn partial_retry_table_fills_defaults() {
+        let toml = r#"
+[tasks.t]
+prompt = "x"
+
+[tasks.t.retry]
+attempts = 3
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        let retry = cfg.tasks["t"].retry.as_ref().unwrap();
+        assert_eq!(retry.attempts, 3);
+        assert_eq!(retry.backoff, BackoffStrategy::Exponential);
+        assert_eq!(retry.initial_delay, 1);
+        assert_eq!(retry.max_delay, 30);
+        assert!(retry.on_timeout);
+    }
+
+    #[test]
+    fn rejects_zero_attempts() {
+        let toml = r#"
+[tasks.t]
+prompt = "x"
+
+[tasks.t.retry]
+attempts = 0
+"#;
+        let result = Config::from_str(toml, Path::new("Amakefile"));
+        assert!(matches!(result, Err(Error::InvalidRetryConfig { .. })));
+    }
+
+    #[test]
+    fn rejects_max_below_initial() {
+        let toml = r#"
+[tasks.t]
+prompt = "x"
+
+[tasks.t.retry]
+attempts = 2
+initial_delay = 10
+max_delay = 5
+"#;
+        let result = Config::from_str(toml, Path::new("Amakefile"));
+        assert!(matches!(result, Err(Error::InvalidRetryConfig { .. })));
+    }
+
+    #[test]
+    fn task_timeout_overrides_default() {
+        let toml = r#"
+[defaults]
+timeout = 30
+
+[tasks.t]
+prompt = "x"
+timeout = 5
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        let effective = cfg.effective_timeout(&cfg.tasks["t"]).unwrap();
+        assert_eq!(effective, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn default_timeout_inherited_when_task_unset() {
+        let toml = r#"
+[defaults]
+timeout = 42
+
+[tasks.t]
+prompt = "x"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        let effective = cfg.effective_timeout(&cfg.tasks["t"]).unwrap();
+        assert_eq!(effective, Duration::from_secs(42));
+    }
+
+    #[test]
+    fn task_retry_overrides_default() {
+        let toml = r#"
+[defaults.retry]
+attempts = 2
+backoff = "fixed"
+
+[tasks.t]
+prompt = "x"
+
+[tasks.t.retry]
+attempts = 5
+backoff = "exponential"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        let effective = cfg.effective_retry(&cfg.tasks["t"]).unwrap();
+        assert_eq!(effective.attempts, 5);
+        assert_eq!(effective.backoff, BackoffStrategy::Exponential);
     }
 }
