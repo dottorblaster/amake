@@ -78,12 +78,15 @@ struct RawConfig {
     defaults: Defaults,
     #[serde(default)]
     tasks: BTreeMap<String, RawTask>,
+    #[serde(default)]
+    vars: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
 pub struct Config {
     pub defaults: Defaults,
     pub tasks: BTreeMap<String, Task>,
+    pub vars: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -99,9 +102,19 @@ impl Config {
             .map(|(name, raw_task)| (name, Task::from(raw_task)))
             .collect();
 
+        let vars = raw
+            .vars
+            .into_iter()
+            .map(|(name, value)| {
+                let resolved = substitute_commands(&name, &value)?;
+                Ok((name, resolved))
+            })
+            .collect::<Result<BTreeMap<_, _>, Error>>()?;
+
         Ok(Self {
             defaults: raw.defaults,
             tasks,
+            vars,
         })
     }
 
@@ -157,6 +170,66 @@ impl Config {
             resolved
         }
     }
+}
+
+fn substitute_commands(name: &str, value: &str) -> Result<String, Error> {
+    let mut result = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'(') {
+            chars.next();
+            let mut cmd = String::new();
+            let mut depth = 1;
+            loop {
+                match chars.next() {
+                    Some('(') => {
+                        depth += 1;
+                        cmd.push('(');
+                    }
+                    Some(')') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        cmd.push(')');
+                    }
+                    Some(c) => cmd.push(c),
+                    None => return Err(Error::VarCommandUnclosed { name: name.into() }),
+                }
+            }
+            let output = run_shell(name, &cmd)?;
+            result.push_str(output.trim_end_matches('\n'));
+        } else {
+            result.push(ch);
+        }
+    }
+
+    Ok(result)
+}
+
+fn run_shell(var_name: &str, command: &str) -> Result<String, Error> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .map_err(|e| Error::VarCommandFailed {
+            name: var_name.into(),
+            command: command.into(),
+            status: -1,
+            stderr: format!("failed to spawn sh: {e}"),
+        })?;
+
+    if !output.status.success() {
+        return Err(Error::VarCommandFailed {
+            name: var_name.into(),
+            command: command.into(),
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 pub fn find_amakefile() -> Result<PathBuf, Error> {
@@ -307,6 +380,62 @@ agent_policy = "deny"
         let task = &cfg.tasks["test"];
         let effective = cfg.effective_sandbox(task, false, true);
         assert!(effective.is_none());
+    }
+
+    #[test]
+    fn parses_vars_table() {
+        let toml = r#"
+[vars]
+greeting = "hello"
+target = "world"
+
+[tasks.t]
+prompt = "x"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        assert_eq!(cfg.vars["greeting"], "hello");
+        assert_eq!(cfg.vars["target"], "world");
+    }
+
+    #[test]
+    fn vars_command_substitution() {
+        let toml = r#"
+[vars]
+who = "$(echo alice)"
+greeting = "hi $(echo there)!"
+
+[tasks.t]
+prompt = "x"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        assert_eq!(cfg.vars["who"], "alice");
+        assert_eq!(cfg.vars["greeting"], "hi there!");
+    }
+
+    #[test]
+    fn vars_command_substitution_failure_errors() {
+        let toml = r#"
+[vars]
+broken = "$(false)"
+
+[tasks.t]
+prompt = "x"
+"#;
+        let result = Config::from_str(toml, Path::new("Amakefile"));
+        assert!(matches!(result, Err(Error::VarCommandFailed { .. })));
+    }
+
+    #[test]
+    fn vars_unclosed_paren_errors() {
+        let toml = r#"
+[vars]
+broken = "$(echo hi"
+
+[tasks.t]
+prompt = "x"
+"#;
+        let result = Config::from_str(toml, Path::new("Amakefile"));
+        assert!(matches!(result, Err(Error::VarCommandUnclosed { .. })));
     }
 
     #[test]
