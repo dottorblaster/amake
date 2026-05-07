@@ -44,20 +44,34 @@ pub enum Error {
         hint: String,
     },
 
-    #[error("{}", format_task_failed(.task, .code, .command, .stderr_tail))]
+    #[error("{}", format_task_failed(.task, .code, *.attempts, .command, .stderr_tail))]
     TaskFailed {
         task: String,
         code: i32,
+        attempts: u32,
         command: Option<String>,
         stderr_tail: Option<String>,
     },
 
-    #[error("{}", format_task_signaled(.task, .command, .stderr_tail))]
+    #[error("{}", format_task_signaled(.task, *.attempts, .command, .stderr_tail))]
     TaskSignaled {
         task: String,
+        attempts: u32,
         command: Option<String>,
         stderr_tail: Option<String>,
     },
+
+    #[error("{}", format_task_timeout(.task, *.timeout_secs, *.attempts, .command, .stderr_tail))]
+    TaskTimeout {
+        task: String,
+        timeout_secs: u64,
+        attempts: u32,
+        command: Option<String>,
+        stderr_tail: Option<String>,
+    },
+
+    #[error("invalid retry config for {task:?}: {reason}")]
+    InvalidRetryConfig { task: String, reason: String },
 
     #[error("editor failed: {reason}")]
     EditorFailed { reason: String },
@@ -87,10 +101,15 @@ pub enum Error {
 fn format_task_failed(
     task: &str,
     code: &i32,
+    attempts: u32,
     command: &Option<String>,
     stderr_tail: &Option<String>,
 ) -> String {
-    let mut msg = format!("task {task:?} failed with exit code {code}");
+    let mut msg = if attempts > 1 {
+        format!("task {task:?} failed with exit code {code} after {attempts} attempts")
+    } else {
+        format!("task {task:?} failed with exit code {code}")
+    };
     if let Some(cmd) = command {
         msg.push_str(&format!("\n  command: {cmd}"));
     }
@@ -107,10 +126,41 @@ fn format_task_failed(
 
 fn format_task_signaled(
     task: &str,
+    attempts: u32,
     command: &Option<String>,
     stderr_tail: &Option<String>,
 ) -> String {
-    let mut msg = format!("task {task:?} was terminated by a signal");
+    let mut msg = if attempts > 1 {
+        format!("task {task:?} was terminated by a signal after {attempts} attempts")
+    } else {
+        format!("task {task:?} was terminated by a signal")
+    };
+    if let Some(cmd) = command {
+        msg.push_str(&format!("\n  command: {cmd}"));
+    }
+    if let Some(stderr) = stderr_tail
+        && !stderr.is_empty()
+    {
+        msg.push_str(&format!(
+            "\n  stderr:\n    {}",
+            stderr.replace('\n', "\n    ")
+        ));
+    }
+    msg
+}
+
+fn format_task_timeout(
+    task: &str,
+    timeout_secs: u64,
+    attempts: u32,
+    command: &Option<String>,
+    stderr_tail: &Option<String>,
+) -> String {
+    let mut msg = if attempts > 1 {
+        format!("task {task:?} timed out after {timeout_secs}s on each of {attempts} attempts")
+    } else {
+        format!("task {task:?} timed out after {timeout_secs}s")
+    };
     if let Some(cmd) = command {
         msg.push_str(&format!("\n  command: {cmd}"));
     }

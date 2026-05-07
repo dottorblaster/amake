@@ -1,10 +1,12 @@
 use crate::adapter::AdapterRegistry;
-use crate::config::Config;
+use crate::config::{BackoffStrategy, Config, RetryConfig};
 use crate::error::Error;
 use crate::template;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader, Read as _};
 use std::process::Stdio;
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 pub fn resolve_execution_order(config: &Config, targets: &[String]) -> Result<Vec<String>, Error> {
     for target in targets {
@@ -122,6 +124,8 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
         let tool = config.effective_tool(task_name)?;
         let workdir = config.effective_workdir(task);
         let sandbox = config.effective_sandbox(task, opts.force_sandbox, opts.no_sandbox);
+        let timeout = config.effective_timeout(task);
+        let retry = config.effective_retry(task);
 
         if sandbox.is_some() && !sandbox_checked {
             check_clampdown()?;
@@ -143,23 +147,31 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
         let resolved = registry.resolve_or_generic(&tool);
         let adapter = resolved.adapter();
 
-        let cmd = adapter.build_command(
-            &rendered_task,
-            workdir.as_deref(),
-            task.auto_approve,
-            sandbox.as_ref(),
-        );
+        let workdir_ref = workdir.as_deref();
+        let sandbox_ref = sandbox.as_ref();
+        let auto_approve = task.auto_approve;
+        let cmd_builder =
+            || adapter.build_command(&rendered_task, workdir_ref, auto_approve, sandbox_ref);
 
         if opts.dry_run {
-            print_command(task_name, &cmd);
+            let cmd = cmd_builder();
+            print_command(task_name, &cmd, timeout, retry.as_ref());
             continue;
         }
 
         eprintln!("▶ running task: {task_name} (tool: {tool})");
 
-        let cmd_string = format_command(&cmd);
+        let cmd_string = format_command(&cmd_builder());
 
-        match execute_task(task_name, cmd, task.capture)? {
+        let (result, attempts) = execute_with_retry(
+            task_name,
+            cmd_builder,
+            task.capture,
+            timeout,
+            retry.as_ref(),
+        )?;
+
+        match result {
             TaskResult::Success(output) => {
                 if let Some(stdout) = output {
                     task_outputs.insert(task_name.clone(), stdout);
@@ -173,6 +185,7 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
                     return Err(Error::TaskFailed {
                         task: task_name.clone(),
                         code,
+                        attempts,
                         command: Some(cmd_string),
                         stderr_tail: Some(stderr_tail),
                     });
@@ -185,6 +198,24 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
                 } else {
                     return Err(Error::TaskSignaled {
                         task: task_name.clone(),
+                        attempts,
+                        command: Some(cmd_string),
+                        stderr_tail: Some(stderr_tail),
+                    });
+                }
+            }
+            TaskResult::TimedOut(stderr_tail) => {
+                let timeout_secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
+                if opts.keep_going {
+                    eprintln!(
+                        "✗ task {task_name:?} timed out after {timeout_secs}s, continuing..."
+                    );
+                    failures.push(task_name.clone());
+                } else {
+                    return Err(Error::TaskTimeout {
+                        task: task_name.clone(),
+                        timeout_secs,
+                        attempts,
                         command: Some(cmd_string),
                         stderr_tail: Some(stderr_tail),
                     });
@@ -202,6 +233,7 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
         return Err(Error::TaskFailed {
             task: failures.join(", "),
             code: 1,
+            attempts: 1,
             command: None,
             stderr_tail: None,
         });
@@ -214,12 +246,75 @@ enum TaskResult {
     Success(Option<String>),
     Failed(i32, String),
     Signaled(String),
+    TimedOut(String),
 }
 
-fn execute_task(
+fn execute_with_retry(
+    task_name: &str,
+    cmd_builder: impl Fn() -> std::process::Command,
+    capture: bool,
+    timeout: Option<Duration>,
+    retry: Option<&RetryConfig>,
+) -> Result<(TaskResult, u32), Error> {
+    let max_attempts = retry.map(|r| r.attempts).unwrap_or(1).max(1);
+    let on_timeout_retry = retry.map(|r| r.on_timeout).unwrap_or(true);
+
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        let cmd = cmd_builder();
+        let result = execute_attempt(task_name, cmd, capture, timeout)?;
+
+        let should_retry = match &result {
+            TaskResult::Success(_) => false,
+            TaskResult::TimedOut(_) => on_timeout_retry && attempt < max_attempts,
+            TaskResult::Failed(_, _) | TaskResult::Signaled(_) => attempt < max_attempts,
+        };
+
+        if !should_retry {
+            return Ok((result, attempt));
+        }
+
+        let cfg = retry.expect("retry must be Some when attempt < max_attempts");
+        let delay = compute_backoff(cfg, attempt);
+        let kind = describe_failure(&result, timeout);
+        eprintln!(
+            "⟲ task {task_name:?} {kind} (attempt {attempt}/{max_attempts}), retrying in {}s...",
+            delay.as_secs()
+        );
+        std::thread::sleep(delay);
+    }
+}
+
+fn describe_failure(result: &TaskResult, timeout: Option<Duration>) -> String {
+    match result {
+        TaskResult::Failed(code, _) => format!("failed (exit {code})"),
+        TaskResult::Signaled(_) => "was killed by a signal".to_string(),
+        TaskResult::TimedOut(_) => {
+            let secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
+            format!("timed out after {secs}s")
+        }
+        TaskResult::Success(_) => unreachable!("Success doesn't trigger retry"),
+    }
+}
+
+fn compute_backoff(cfg: &RetryConfig, attempt: u32) -> Duration {
+    let secs = match cfg.backoff {
+        BackoffStrategy::Fixed => cfg.initial_delay,
+        BackoffStrategy::Linear => cfg.initial_delay.saturating_mul(attempt as u64),
+        BackoffStrategy::Exponential => {
+            let exp = (attempt - 1).min(63);
+            cfg.initial_delay.saturating_mul(2u64.saturating_pow(exp))
+        }
+    };
+    Duration::from_secs(secs.min(cfg.max_delay))
+}
+
+fn execute_attempt(
     task_name: &str,
     mut cmd: std::process::Command,
     capture: bool,
+    timeout: Option<Duration>,
 ) -> Result<TaskResult, Error> {
     if capture {
         cmd.stdout(Stdio::piped());
@@ -245,14 +340,28 @@ fn execute_task(
         })
     });
 
-    let stdout = if capture {
-        let mut output = String::new();
-        if let Some(mut stdout) = child.stdout.take() {
-            stdout.read_to_string(&mut output)?;
-        }
-        Some(output)
+    let stdout_handle = if capture {
+        child.stdout.take().map(|mut stdout| {
+            std::thread::spawn(move || -> std::io::Result<String> {
+                let mut output = String::new();
+                stdout.read_to_string(&mut output)?;
+                Ok(output)
+            })
+        })
     } else {
         None
+    };
+
+    let (status, timed_out) = match timeout {
+        Some(d) => match child.wait_timeout(d)? {
+            Some(s) => (s, false),
+            None => {
+                let _ = child.kill();
+                let s = child.wait()?;
+                (s, true)
+            }
+        },
+        None => (child.wait()?, false),
     };
 
     let stderr_output = match stderr_handle {
@@ -260,10 +369,17 @@ fn execute_task(
         None => String::new(),
     };
 
-    let status = child.wait()?;
+    let stdout_output = match stdout_handle {
+        Some(handle) => Some(handle.join().expect("stdout reader thread panicked")?),
+        None => None,
+    };
+
+    if timed_out {
+        return Ok(TaskResult::TimedOut(stderr_tail(&stderr_output, 20)));
+    }
 
     if status.success() {
-        Ok(TaskResult::Success(stdout))
+        Ok(TaskResult::Success(stdout_output))
     } else {
         let tail = stderr_tail(&stderr_output, 20);
         match status.code() {
@@ -303,8 +419,32 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn print_command(task_name: &str, cmd: &std::process::Command) {
-    println!("[{task_name}] {}", format_command(cmd));
+fn print_command(
+    task_name: &str,
+    cmd: &std::process::Command,
+    timeout: Option<Duration>,
+    retry: Option<&RetryConfig>,
+) {
+    let mut annotations = Vec::new();
+    if let Some(t) = timeout {
+        annotations.push(format!("timeout {}s", t.as_secs()));
+    }
+    if let Some(r) = retry
+        && r.attempts > 1
+    {
+        let backoff = match r.backoff {
+            BackoffStrategy::Fixed => "fixed",
+            BackoffStrategy::Linear => "linear",
+            BackoffStrategy::Exponential => "exponential",
+        };
+        annotations.push(format!("retry {}x {backoff}", r.attempts));
+    }
+    let suffix = if annotations.is_empty() {
+        String::new()
+    } else {
+        format!("  ({})", annotations.join(", "))
+    };
+    println!("[{task_name}] {}{suffix}", format_command(cmd));
 }
 
 #[cfg(test)]
@@ -426,5 +566,49 @@ depends = ["nonexistent"]
         );
         let result = resolve_execution_order(&cfg, &["a".into()]);
         assert!(matches!(result, Err(Error::UnknownTask(_))));
+    }
+
+    fn retry(backoff: BackoffStrategy, initial: u64, max: u64) -> RetryConfig {
+        RetryConfig {
+            attempts: 5,
+            backoff,
+            initial_delay: initial,
+            max_delay: max,
+            on_timeout: true,
+        }
+    }
+
+    #[test]
+    fn backoff_fixed_is_constant() {
+        let cfg = retry(BackoffStrategy::Fixed, 2, 60);
+        assert_eq!(compute_backoff(&cfg, 1), Duration::from_secs(2));
+        assert_eq!(compute_backoff(&cfg, 4), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn backoff_linear_scales_with_attempt() {
+        let cfg = retry(BackoffStrategy::Linear, 3, 60);
+        assert_eq!(compute_backoff(&cfg, 1), Duration::from_secs(3));
+        assert_eq!(compute_backoff(&cfg, 2), Duration::from_secs(6));
+        assert_eq!(compute_backoff(&cfg, 3), Duration::from_secs(9));
+    }
+
+    #[test]
+    fn backoff_exponential_doubles() {
+        let cfg = retry(BackoffStrategy::Exponential, 1, 60);
+        assert_eq!(compute_backoff(&cfg, 1), Duration::from_secs(1));
+        assert_eq!(compute_backoff(&cfg, 2), Duration::from_secs(2));
+        assert_eq!(compute_backoff(&cfg, 3), Duration::from_secs(4));
+        assert_eq!(compute_backoff(&cfg, 4), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn backoff_caps_at_max_delay() {
+        let cfg = retry(BackoffStrategy::Exponential, 1, 5);
+        assert_eq!(compute_backoff(&cfg, 1), Duration::from_secs(1));
+        assert_eq!(compute_backoff(&cfg, 2), Duration::from_secs(2));
+        assert_eq!(compute_backoff(&cfg, 3), Duration::from_secs(4));
+        assert_eq!(compute_backoff(&cfg, 4), Duration::from_secs(5));
+        assert_eq!(compute_backoff(&cfg, 30), Duration::from_secs(5));
     }
 }

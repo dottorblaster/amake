@@ -61,7 +61,27 @@ prompt = "Refactor error handling to use thiserror."
 files = ["src/main.rs", "src/error.rs"] # context files passed to the tool
 auto_approve = true                     # tool-specific "don't ask" flag
 extra_args = ["--model", "gpt-4"]       # passed verbatim to the tool CLI
+timeout = 300                           # seconds; kill the child if it runs longer (optional)
 ```
+
+### Timeout and retry
+
+AI CLIs hang and flake. `timeout` (in seconds) caps how long a single attempt may run; `[tasks.<name>.retry]` re-runs failed attempts with backoff:
+
+```toml
+[tasks.review]
+prompt = "Review the diff."
+timeout = 300
+
+[tasks.review.retry]
+attempts = 3                # total runs (default 1, i.e. no retry)
+backoff = "exponential"     # "fixed" | "linear" | "exponential" (default)
+initial_delay = 1           # seconds (default 1)
+max_delay = 30              # cap for linear/exponential (default 30)
+on_timeout = true           # also retry when the timeout fires (default true)
+```
+
+Both `timeout` and `retry` can also be set under `[defaults]` to apply to every task; per-task values override.
 
 A task can depend on other tasks and use their captured output:
 
