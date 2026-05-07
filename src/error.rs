@@ -63,6 +63,19 @@ pub enum Error {
     EditorFailed { reason: String },
 
     #[error(
+        "variable {name:?}: command substitution failed (exit {status})\n  command: {command}\n  stderr: {stderr}"
+    )]
+    VarCommandFailed {
+        name: String,
+        command: String,
+        status: i32,
+        stderr: String,
+    },
+
+    #[error("variable {name:?}: unclosed $( in value")]
+    VarCommandUnclosed { name: String },
+
+    #[error(
         "clampdown not found — install it from https://github.com/89luca89/clampdown or disable sandbox with --no-sandbox"
     )]
     ClampdownNotFound,

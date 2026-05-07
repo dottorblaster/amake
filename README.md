@@ -87,10 +87,25 @@ Prompts support `{{...}}` placeholders from three sources:
 | Syntax | Source |
 |---|---|
 | `{{tasks.foo.stdout}}` | Captured output from task `foo` (must be in `depends`, must have `capture = true`) |
-| `{{vars.name}}` | Passed via `--var name=value` or `--edit-var name` on the CLI |
+| `{{vars.name}}` | Defined in the `[vars]` table, or passed via `--var name=value` / `--edit-var name` on the CLI |
 | `{{env.HOME}}` | Read from the environment |
 
 Missing variables are a hard error — no silent empty strings.
+
+### Variables in the Amakefile
+
+You can declare vars directly in the Amakefile under a `[vars]` table:
+
+```toml
+[vars]
+who = "world"
+branch = "$(git rev-parse --abbrev-ref HEAD)"
+today = "$(date +%Y-%m-%d)"
+```
+
+Values support shell command substitution. Anything inside `$(...)` is run through `sh -c` when the Amakefile loads, and its stdout (with the trailing newline trimmed) is inlined into the value. If the command exits non-zero, loading fails with the command's stderr.
+
+Precedence is `[vars]` < `--var` < `--edit-var`. Anything passed on the command line overrides what's in the file.
 
 ### Editor-based variables
 

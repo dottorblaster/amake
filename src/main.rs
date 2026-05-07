@@ -86,14 +86,17 @@ fn run() -> Result<(), Error> {
             tasks,
             dry_run,
             keep_going,
-            vars,
+            vars: cli_vars,
             edit_vars,
             file,
             sandbox,
             no_sandbox,
         } => {
             let config = load_config(file)?;
-            let mut vars = parse_vars(&vars)?;
+            let mut vars = config.vars.clone();
+            for (k, v) in parse_vars(&cli_vars)? {
+                vars.insert(k, v);
+            }
 
             for name in &edit_vars {
                 eprintln!("✎ opening editor for variable: {name}");

@@ -556,6 +556,89 @@ prompt = "Hello {{env.AMAKE_TEST_NAME}}"
         .stdout(predicate::str::contains("Hello TestUser"));
 }
 
+#[test]
+fn run_amakefile_var_interpolation() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[vars]
+who = "world"
+
+[tasks.greet]
+tool = "echo"
+prompt = "Hello {{vars.who}}"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hello world"));
+}
+
+#[test]
+fn run_amakefile_var_command_substitution() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[vars]
+who = "$(echo alice)"
+
+[tasks.greet]
+tool = "echo"
+prompt = "Hello {{vars.who}}"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hello alice"));
+}
+
+#[test]
+fn run_cli_var_overrides_amakefile_var() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[vars]
+who = "world"
+
+[tasks.greet]
+tool = "echo"
+prompt = "Hello {{vars.who}}"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "--var",
+            "who=bob",
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hello bob"));
+}
+
 // ── Editor variable (--edit-var) ──
 
 /// Helper: create a fake editor script that writes known content to the file it receives.
