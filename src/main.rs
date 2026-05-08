@@ -2,6 +2,7 @@ mod adapter;
 mod config;
 mod editor;
 mod error;
+mod render;
 mod runner;
 mod sandbox;
 mod template;
@@ -55,6 +56,10 @@ enum Commands {
         /// Disable sandbox for all tasks (overrides config)
         #[arg(long)]
         no_sandbox: bool,
+
+        /// Disable syntax-highlighted markdown rendering of task output
+        #[arg(long)]
+        no_format: bool,
     },
 
     /// List all tasks in the Amakefile
@@ -91,6 +96,7 @@ fn run() -> Result<(), Error> {
             file,
             sandbox,
             no_sandbox,
+            no_format,
         } => {
             let config = load_config(file)?;
             let mut vars = config.vars.clone();
@@ -112,6 +118,7 @@ fn run() -> Result<(), Error> {
                     keep_going,
                     force_sandbox: sandbox,
                     no_sandbox,
+                    no_format,
                     vars,
                 },
             )
