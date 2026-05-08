@@ -1,12 +1,20 @@
 use crate::adapter::AdapterRegistry;
 use crate::config::{BackoffStrategy, Config, RetryConfig};
 use crate::error::Error;
+use crate::render::{self, Assets, StreamingRenderer};
 use crate::template;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::{BufRead, BufReader, Read as _};
+use std::io::{BufRead, BufReader, Write as _};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use wait_timeout::ChildExt;
+
+#[derive(Clone)]
+enum RenderMode {
+    Off,
+    On(Arc<Assets>),
+}
 
 pub fn resolve_execution_order(config: &Config, targets: &[String]) -> Result<Vec<String>, Error> {
     for target in targets {
@@ -102,11 +110,18 @@ pub struct RunOptions {
     pub keep_going: bool,
     pub force_sandbox: bool,
     pub no_sandbox: bool,
+    pub no_format: bool,
     pub vars: BTreeMap<String, String>,
 }
 
 pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(), Error> {
     let order = resolve_execution_order(config, targets)?;
+
+    let render_mode = if render::should_render(opts.no_format) {
+        RenderMode::On(Arc::new(Assets::load()))
+    } else {
+        RenderMode::Off
+    };
 
     let capture_flags: BTreeMap<String, bool> = config
         .tasks
@@ -169,6 +184,7 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
             task.capture,
             timeout,
             retry.as_ref(),
+            &render_mode,
         )?;
 
         match result {
@@ -255,6 +271,7 @@ fn execute_with_retry(
     capture: bool,
     timeout: Option<Duration>,
     retry: Option<&RetryConfig>,
+    render_mode: &RenderMode,
 ) -> Result<(TaskResult, u32), Error> {
     let max_attempts = retry.map(|r| r.attempts).unwrap_or(1).max(1);
     let on_timeout_retry = retry.map(|r| r.on_timeout).unwrap_or(true);
@@ -263,7 +280,7 @@ fn execute_with_retry(
     loop {
         attempt += 1;
         let cmd = cmd_builder();
-        let result = execute_attempt(task_name, cmd, capture, timeout)?;
+        let result = execute_attempt(task_name, cmd, capture, timeout, render_mode)?;
 
         let should_retry = match &result {
             TaskResult::Success(_) => false,
@@ -315,10 +332,9 @@ fn execute_attempt(
     mut cmd: std::process::Command,
     capture: bool,
     timeout: Option<Duration>,
+    render_mode: &RenderMode,
 ) -> Result<TaskResult, Error> {
-    if capture {
-        cmd.stdout(Stdio::piped());
-    }
+    cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| {
@@ -340,17 +356,41 @@ fn execute_attempt(
         })
     });
 
-    let stdout_handle = if capture {
-        child.stdout.take().map(|mut stdout| {
-            std::thread::spawn(move || -> std::io::Result<String> {
-                let mut output = String::new();
-                stdout.read_to_string(&mut output)?;
-                Ok(output)
-            })
+    let stdout_handle = child.stdout.take().map(|stdout| {
+        let render_mode = render_mode.clone();
+        let want_capture = capture;
+        std::thread::spawn(move || -> std::io::Result<Option<String>> {
+            let mut accumulated = if want_capture {
+                Some(String::new())
+            } else {
+                None
+            };
+            let stdout_lock = std::io::stdout().lock();
+            let mut renderer = match render_mode {
+                RenderMode::On(assets) => Some(StreamingRenderer::new(stdout_lock, assets)),
+                RenderMode::Off => None,
+            };
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line?;
+                if let Some(r) = renderer.as_mut() {
+                    r.push_line(&line);
+                } else {
+                    println!("{line}");
+                }
+                if let Some(s) = accumulated.as_mut() {
+                    s.push_str(&line);
+                    s.push('\n');
+                }
+            }
+            if let Some(r) = renderer.as_mut() {
+                r.finish();
+            }
+            // Best-effort flush so any buffered ANSI lands before the next task's banner.
+            let _ = std::io::stdout().flush();
+            Ok(accumulated)
         })
-    } else {
-        None
-    };
+    });
 
     let (status, timed_out) = match timeout {
         Some(d) => match child.wait_timeout(d)? {
@@ -370,7 +410,7 @@ fn execute_attempt(
     };
 
     let stdout_output = match stdout_handle {
-        Some(handle) => Some(handle.join().expect("stdout reader thread panicked")?),
+        Some(handle) => handle.join().expect("stdout reader thread panicked")?,
         None => None,
     };
 
