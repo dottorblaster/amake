@@ -216,10 +216,13 @@ pub fn spawn_supervisor(
             match next_action(idle, idle_warn, idle_kill, last_warn_ms, now_ms) {
                 Action::Kill => {
                     killed_for_idle.store(true, Ordering::Release);
-                    // SAFETY: SIGTERM to the child's pid. PID-reuse race is
-                    // documented and matches the existing wait_timeout->kill path.
+                    // SAFETY: SIGTERM to the child's process group (negative pid).
+                    // The runner spawned the child with its own pgroup so this
+                    // reaches grandchildren too — required because shells like
+                    // dash don't forward signals to their forked subprocesses,
+                    // and any surviving grandchild keeps our pipe fds open.
                     unsafe {
-                        libc::kill(pid, libc::SIGTERM);
+                        libc::kill(-pid, libc::SIGTERM);
                     }
                     break;
                 }

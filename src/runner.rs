@@ -6,6 +6,7 @@ use crate::report::{self, Activity};
 use crate::template;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader, Write as _};
+use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -393,6 +394,11 @@ fn execute_attempt(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Put the child in its own process group so kill signals reach the whole
+    // subtree. Without this, signalling the leader (e.g. `sh -c '... sleep N'`)
+    // leaves the forked grandchildren alive holding our pipe fds, and the
+    // reader threads block on EOF that never comes.
+    cmd.process_group(0);
 
     let mut child = cmd.spawn().map_err(|e| {
         report::status_line(&format!("✗ failed to start task {task_name:?}: {e}"));
@@ -471,7 +477,11 @@ fn execute_attempt(
         Some(d) => match child.wait_timeout(d)? {
             Some(s) => (s, false),
             None => {
-                let _ = child.kill();
+                // SAFETY: SIGKILL to the whole process group; killing only the
+                // leader leaves grandchildren holding our pipe fds open.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
                 let s = child.wait()?;
                 (s, true)
             }
