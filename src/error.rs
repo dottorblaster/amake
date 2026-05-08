@@ -198,9 +198,7 @@ fn format_task_idle_killed(
             "task {task:?} killed after {idle_secs}s of silence (idle limit {idle_kill_secs}s) on each of {attempts} attempts"
         )
     } else {
-        format!(
-            "task {task:?} killed after {idle_secs}s of silence (idle limit {idle_kill_secs}s)"
-        )
+        format!("task {task:?} killed after {idle_secs}s of silence (idle limit {idle_kill_secs}s)")
     };
     if let Some(cmd) = command {
         msg.push_str(&format!("\n  command: {cmd}"));

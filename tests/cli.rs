@@ -1065,9 +1065,7 @@ idle_kill = 2
         ])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("killed after").and(predicate::str::contains("silence")),
-        );
+        .stderr(predicate::str::contains("killed after").and(predicate::str::contains("silence")));
     assert!(
         start.elapsed() < std::time::Duration::from_secs(8),
         "idle_kill should fire well before the 60s sleep completes"
