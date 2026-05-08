@@ -182,16 +182,15 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
 
         let cmd_string = format_command(&cmd_builder());
 
-        let (result, attempts) = execute_with_retry(
-            task_name,
-            cmd_builder,
-            task.capture,
+        let attempt_opts = AttemptOpts {
+            capture: task.capture,
             timeout,
-            retry.as_ref(),
-            &render_mode,
+            render_mode: &render_mode,
             idle_warn,
             idle_kill,
-        )?;
+        };
+        let (result, attempts) =
+            execute_with_retry(task_name, cmd_builder, &attempt_opts, retry.as_ref())?;
 
         match result {
             TaskResult::Success(output) => {
@@ -301,16 +300,19 @@ enum TaskResult {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
+struct AttemptOpts<'a> {
+    capture: bool,
+    timeout: Option<Duration>,
+    render_mode: &'a RenderMode,
+    idle_warn: Option<Duration>,
+    idle_kill: Option<Duration>,
+}
+
 fn execute_with_retry(
     task_name: &str,
     cmd_builder: impl Fn() -> std::process::Command,
-    capture: bool,
-    timeout: Option<Duration>,
+    opts: &AttemptOpts,
     retry: Option<&RetryConfig>,
-    render_mode: &RenderMode,
-    idle_warn: Option<Duration>,
-    idle_kill: Option<Duration>,
 ) -> Result<(TaskResult, u32), Error> {
     let max_attempts = retry.map(|r| r.attempts).unwrap_or(1).max(1);
     let on_timeout_retry = retry.map(|r| r.on_timeout).unwrap_or(true);
@@ -319,15 +321,7 @@ fn execute_with_retry(
     loop {
         attempt += 1;
         let cmd = cmd_builder();
-        let result = execute_attempt(
-            task_name,
-            cmd,
-            capture,
-            timeout,
-            render_mode,
-            idle_warn,
-            idle_kill,
-        )?;
+        let result = execute_attempt(task_name, cmd, opts)?;
 
         let should_retry = match &result {
             TaskResult::Success(_) => false,
@@ -343,7 +337,7 @@ fn execute_with_retry(
 
         let cfg = retry.expect("retry must be Some when attempt < max_attempts");
         let delay = compute_backoff(cfg, attempt);
-        let kind = describe_failure(&result, timeout);
+        let kind = describe_failure(&result, opts.timeout);
         report::status_line(&format!(
             "⟲ task {task_name:?} {kind} (attempt {attempt}/{max_attempts}), retrying in {}s...",
             delay.as_secs()
@@ -384,12 +378,16 @@ fn compute_backoff(cfg: &RetryConfig, attempt: u32) -> Duration {
 fn execute_attempt(
     task_name: &str,
     mut cmd: std::process::Command,
-    capture: bool,
-    timeout: Option<Duration>,
-    render_mode: &RenderMode,
-    idle_warn: Option<Duration>,
-    idle_kill: Option<Duration>,
+    opts: &AttemptOpts,
 ) -> Result<TaskResult, Error> {
+    let AttemptOpts {
+        capture,
+        timeout,
+        render_mode,
+        idle_warn,
+        idle_kill,
+    } = *opts;
+
     // Close stdin: any AI tool (or sub-process like git over SSH) that tries to
     // read interactive input gets EOF and fails fast instead of hanging forever.
     cmd.stdin(Stdio::null());
