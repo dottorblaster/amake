@@ -91,6 +91,8 @@ mod tests {
             extra_args: vec![],
             timeout: None,
             retry: None,
+            idle_warn: None,
+            idle_kill: None,
         }
     }
 

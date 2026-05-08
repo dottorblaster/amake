@@ -3,6 +3,7 @@ mod config;
 mod editor;
 mod error;
 mod render;
+mod report;
 mod runner;
 mod sandbox;
 mod template;
@@ -105,7 +106,7 @@ fn run() -> Result<(), Error> {
             }
 
             for name in &edit_vars {
-                eprintln!("✎ opening editor for variable: {name}");
+                report::status_line(&format!("✎ opening editor for variable: {name}"));
                 let value = editor::edit_variable(name)?;
                 vars.insert(name.clone(), value);
             }
