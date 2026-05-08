@@ -70,6 +70,16 @@ pub enum Error {
         stderr_tail: Option<String>,
     },
 
+    #[error("{}", format_task_idle_killed(.task, *.idle_secs, *.idle_kill_secs, *.attempts, .command, .stderr_tail))]
+    TaskIdleKilled {
+        task: String,
+        idle_secs: u64,
+        idle_kill_secs: u64,
+        attempts: u32,
+        command: Option<String>,
+        stderr_tail: Option<String>,
+    },
+
     #[error("invalid retry config for {task:?}: {reason}")]
     InvalidRetryConfig { task: String, reason: String },
 
@@ -160,6 +170,37 @@ fn format_task_timeout(
         format!("task {task:?} timed out after {timeout_secs}s on each of {attempts} attempts")
     } else {
         format!("task {task:?} timed out after {timeout_secs}s")
+    };
+    if let Some(cmd) = command {
+        msg.push_str(&format!("\n  command: {cmd}"));
+    }
+    if let Some(stderr) = stderr_tail
+        && !stderr.is_empty()
+    {
+        msg.push_str(&format!(
+            "\n  stderr:\n    {}",
+            stderr.replace('\n', "\n    ")
+        ));
+    }
+    msg
+}
+
+fn format_task_idle_killed(
+    task: &str,
+    idle_secs: u64,
+    idle_kill_secs: u64,
+    attempts: u32,
+    command: &Option<String>,
+    stderr_tail: &Option<String>,
+) -> String {
+    let mut msg = if attempts > 1 {
+        format!(
+            "task {task:?} killed after {idle_secs}s of silence (idle limit {idle_kill_secs}s) on each of {attempts} attempts"
+        )
+    } else {
+        format!(
+            "task {task:?} killed after {idle_secs}s of silence (idle limit {idle_kill_secs}s)"
+        )
     };
     if let Some(cmd) = command {
         msg.push_str(&format!("\n  command: {cmd}"));

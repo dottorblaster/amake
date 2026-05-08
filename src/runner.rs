@@ -2,10 +2,12 @@ use crate::adapter::AdapterRegistry;
 use crate::config::{BackoffStrategy, Config, RetryConfig};
 use crate::error::Error;
 use crate::render::{self, Assets, StreamingRenderer};
+use crate::report::{self, Activity};
 use crate::template;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use wait_timeout::ChildExt;
@@ -141,6 +143,8 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
         let sandbox = config.effective_sandbox(task, opts.force_sandbox, opts.no_sandbox);
         let timeout = config.effective_timeout(task);
         let retry = config.effective_retry(task);
+        let idle_warn = config.effective_idle_warn(task);
+        let idle_kill = config.effective_idle_kill(task);
 
         if sandbox.is_some() && !sandbox_checked {
             check_clampdown()?;
@@ -174,7 +178,7 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
             continue;
         }
 
-        eprintln!("▶ running task: {task_name} (tool: {tool})");
+        report::status_line(&format!("▶ running task: {task_name} (tool: {tool})"));
 
         let cmd_string = format_command(&cmd_builder());
 
@@ -185,6 +189,8 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
             timeout,
             retry.as_ref(),
             &render_mode,
+            idle_warn,
+            idle_kill,
         )?;
 
         match result {
@@ -195,7 +201,9 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
             }
             TaskResult::Failed(code, stderr_tail) => {
                 if opts.keep_going {
-                    eprintln!("✗ task {task_name:?} failed (exit code {code}), continuing...");
+                    report::status_line(&format!(
+                        "✗ task {task_name:?} failed (exit code {code}), continuing..."
+                    ));
                     failures.push(task_name.clone());
                 } else {
                     return Err(Error::TaskFailed {
@@ -209,7 +217,9 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
             }
             TaskResult::Signaled(stderr_tail) => {
                 if opts.keep_going {
-                    eprintln!("✗ task {task_name:?} was killed by a signal, continuing...");
+                    report::status_line(&format!(
+                        "✗ task {task_name:?} was killed by a signal, continuing..."
+                    ));
                     failures.push(task_name.clone());
                 } else {
                     return Err(Error::TaskSignaled {
@@ -223,9 +233,9 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
             TaskResult::TimedOut(stderr_tail) => {
                 let timeout_secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
                 if opts.keep_going {
-                    eprintln!(
+                    report::status_line(&format!(
                         "✗ task {task_name:?} timed out after {timeout_secs}s, continuing..."
-                    );
+                    ));
                     failures.push(task_name.clone());
                 } else {
                     return Err(Error::TaskTimeout {
@@ -237,15 +247,36 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
                     });
                 }
             }
+            TaskResult::IdleKilled {
+                stderr_tail,
+                idle_secs,
+                idle_kill_secs,
+            } => {
+                if opts.keep_going {
+                    report::status_line(&format!(
+                        "✗ task {task_name:?} killed after {idle_secs}s of silence (idle limit {idle_kill_secs}s), continuing..."
+                    ));
+                    failures.push(task_name.clone());
+                } else {
+                    return Err(Error::TaskIdleKilled {
+                        task: task_name.clone(),
+                        idle_secs,
+                        idle_kill_secs,
+                        attempts,
+                        command: Some(cmd_string),
+                        stderr_tail: Some(stderr_tail),
+                    });
+                }
+            }
         }
     }
 
     if !failures.is_empty() {
-        eprintln!(
+        report::status_line(&format!(
             "\n✗ {} task(s) failed: {}",
             failures.len(),
             failures.join(", ")
-        );
+        ));
         return Err(Error::TaskFailed {
             task: failures.join(", "),
             code: 1,
@@ -263,8 +294,14 @@ enum TaskResult {
     Failed(i32, String),
     Signaled(String),
     TimedOut(String),
+    IdleKilled {
+        stderr_tail: String,
+        idle_secs: u64,
+        idle_kill_secs: u64,
+    },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_with_retry(
     task_name: &str,
     cmd_builder: impl Fn() -> std::process::Command,
@@ -272,6 +309,8 @@ fn execute_with_retry(
     timeout: Option<Duration>,
     retry: Option<&RetryConfig>,
     render_mode: &RenderMode,
+    idle_warn: Option<Duration>,
+    idle_kill: Option<Duration>,
 ) -> Result<(TaskResult, u32), Error> {
     let max_attempts = retry.map(|r| r.attempts).unwrap_or(1).max(1);
     let on_timeout_retry = retry.map(|r| r.on_timeout).unwrap_or(true);
@@ -280,11 +319,21 @@ fn execute_with_retry(
     loop {
         attempt += 1;
         let cmd = cmd_builder();
-        let result = execute_attempt(task_name, cmd, capture, timeout, render_mode)?;
+        let result = execute_attempt(
+            task_name,
+            cmd,
+            capture,
+            timeout,
+            render_mode,
+            idle_warn,
+            idle_kill,
+        )?;
 
         let should_retry = match &result {
             TaskResult::Success(_) => false,
-            TaskResult::TimedOut(_) => on_timeout_retry && attempt < max_attempts,
+            TaskResult::TimedOut(_) | TaskResult::IdleKilled { .. } => {
+                on_timeout_retry && attempt < max_attempts
+            }
             TaskResult::Failed(_, _) | TaskResult::Signaled(_) => attempt < max_attempts,
         };
 
@@ -295,10 +344,10 @@ fn execute_with_retry(
         let cfg = retry.expect("retry must be Some when attempt < max_attempts");
         let delay = compute_backoff(cfg, attempt);
         let kind = describe_failure(&result, timeout);
-        eprintln!(
+        report::status_line(&format!(
             "⟲ task {task_name:?} {kind} (attempt {attempt}/{max_attempts}), retrying in {}s...",
             delay.as_secs()
-        );
+        ));
         std::thread::sleep(delay);
     }
 }
@@ -311,6 +360,11 @@ fn describe_failure(result: &TaskResult, timeout: Option<Duration>) -> String {
             let secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
             format!("timed out after {secs}s")
         }
+        TaskResult::IdleKilled {
+            idle_secs,
+            idle_kill_secs,
+            ..
+        } => format!("went idle for {idle_secs}s (limit {idle_kill_secs}s)"),
         TaskResult::Success(_) => unreachable!("Success doesn't trigger retry"),
     }
 }
@@ -333,22 +387,43 @@ fn execute_attempt(
     capture: bool,
     timeout: Option<Duration>,
     render_mode: &RenderMode,
+    idle_warn: Option<Duration>,
+    idle_kill: Option<Duration>,
 ) -> Result<TaskResult, Error> {
+    // Close stdin: any AI tool (or sub-process like git over SSH) that tries to
+    // read interactive input gets EOF and fails fast instead of hanging forever.
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| {
-        eprintln!("✗ failed to start task {task_name:?}: {e}");
+        report::status_line(&format!("✗ failed to start task {task_name:?}: {e}"));
         e
     })?;
 
+    let pid = child.id() as i32;
+    let activity = Activity::new();
+    let killed_for_idle = Arc::new(AtomicBool::new(false));
+
+    // Drop guard ensures the supervisor stops cleanly on any early return.
+    let _supervisor = report::spawn_supervisor(
+        task_name.to_string(),
+        pid,
+        Arc::clone(&activity),
+        idle_warn,
+        idle_kill,
+        Arc::clone(&killed_for_idle),
+    );
+
     let stderr_handle = child.stderr.take().map(|stderr| {
+        let activity = Arc::clone(&activity);
         std::thread::spawn(move || -> std::io::Result<String> {
             let reader = BufReader::new(stderr);
             let mut accumulated = String::new();
             for line in reader.lines() {
                 let line = line?;
-                eprintln!("{line}");
+                activity.mark_active();
+                report::status_line(&line);
                 accumulated.push_str(&line);
                 accumulated.push('\n');
             }
@@ -359,6 +434,7 @@ fn execute_attempt(
     let stdout_handle = child.stdout.take().map(|stdout| {
         let render_mode = render_mode.clone();
         let want_capture = capture;
+        let activity = Arc::clone(&activity);
         std::thread::spawn(move || -> std::io::Result<Option<String>> {
             let mut accumulated = if want_capture {
                 Some(String::new())
@@ -373,6 +449,7 @@ fn execute_attempt(
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let line = line?;
+                activity.mark_active();
                 if let Some(r) = renderer.as_mut() {
                     r.push_line(&line);
                 } else {
@@ -416,6 +493,16 @@ fn execute_attempt(
 
     if timed_out {
         return Ok(TaskResult::TimedOut(stderr_tail(&stderr_output, 20)));
+    }
+
+    // Check idle-kill BEFORE the signal branch — the supervisor's SIGTERM would
+    // otherwise be reported as a generic signal exit.
+    if killed_for_idle.load(Ordering::Acquire) {
+        return Ok(TaskResult::IdleKilled {
+            stderr_tail: stderr_tail(&stderr_output, 20),
+            idle_secs: activity.idle_for().as_secs(),
+            idle_kill_secs: idle_kill.map(|d| d.as_secs()).unwrap_or(0),
+        });
     }
 
     if status.success() {

@@ -13,6 +13,8 @@ pub struct Defaults {
     pub sandbox: Option<SandboxConfig>,
     pub timeout: Option<u64>,
     pub retry: Option<RetryConfig>,
+    pub idle_warn: Option<u64>,
+    pub idle_kill: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,6 +73,8 @@ struct RawTask {
     extra_args: Vec<String>,
     timeout: Option<u64>,
     retry: Option<RetryConfig>,
+    idle_warn: Option<u64>,
+    idle_kill: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +90,8 @@ pub struct Task {
     pub extra_args: Vec<String>,
     pub timeout: Option<u64>,
     pub retry: Option<RetryConfig>,
+    pub idle_warn: Option<u64>,
+    pub idle_kill: Option<u64>,
 }
 
 impl From<RawTask> for Task {
@@ -108,6 +114,8 @@ impl From<RawTask> for Task {
             extra_args: raw.extra_args,
             timeout: raw.timeout,
             retry: raw.retry,
+            idle_warn: raw.idle_warn,
+            idle_kill: raw.idle_kill,
         }
     }
 }
@@ -228,6 +236,18 @@ impl Config {
 
     pub fn effective_retry(&self, task: &Task) -> Option<RetryConfig> {
         task.retry.clone().or_else(|| self.defaults.retry.clone())
+    }
+
+    pub fn effective_idle_warn(&self, task: &Task) -> Option<Duration> {
+        task.idle_warn
+            .or(self.defaults.idle_warn)
+            .map(Duration::from_secs)
+    }
+
+    pub fn effective_idle_kill(&self, task: &Task) -> Option<Duration> {
+        task.idle_kill
+            .or(self.defaults.idle_kill)
+            .map(Duration::from_secs)
     }
 }
 

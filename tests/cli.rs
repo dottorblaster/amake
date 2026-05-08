@@ -1038,3 +1038,157 @@ attempts = 0
         .failure()
         .stderr(predicate::str::contains("invalid retry config"));
 }
+
+// ── Stall detection / idle thresholds / closed stdin ──
+
+#[test]
+fn idle_kill_terminates_stalled_task() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.stalled]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "echo hi; sleep 60"]
+idle_kill = 2
+"#,
+    );
+
+    let start = std::time::Instant::now();
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "stalled",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("killed after").and(predicate::str::contains("silence")),
+        );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(8),
+        "idle_kill should fire well before the 60s sleep completes"
+    );
+}
+
+#[test]
+fn idle_warn_only_emits_warning_but_succeeds() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.slowish]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "echo hi; sleep 3"]
+idle_warn = 1
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "slowish",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("idle for"));
+}
+
+#[test]
+fn closed_stdin_makes_cat_exit_immediately() {
+    // `cat` with no args reads from stdin. With Stdio::null, the read sees EOF
+    // and the process exits cleanly. Without it, this test would hang forever.
+    // `sh -c cat ""` invokes cat with no args ($0 set to "" but argv empty).
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.cat]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "cat"]
+"#,
+    );
+
+    let start = std::time::Instant::now();
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "cat",
+        ])
+        .assert()
+        .success();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "closed stdin should make cat exit immediately on EOF"
+    );
+}
+
+#[test]
+fn no_spinner_when_stderr_is_piped() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.t]
+tool = "echo"
+prompt = "hi"
+"#,
+    );
+
+    // assert_cmd captures stderr non-TTY; spinner braille glyphs must not appear.
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "t",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("⠋").not());
+}
+
+#[test]
+fn idle_kill_triggers_retry_when_on_timeout_true() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.stalled]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "echo hi; sleep 30"]
+idle_kill = 1
+
+[tasks.stalled.retry]
+attempts = 2
+initial_delay = 1
+on_timeout = true
+"#,
+    );
+
+    let start = std::time::Instant::now();
+    amake()
+        .args([
+            "run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "stalled",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("retrying").and(predicate::str::contains("went idle")));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "two attempts of ~1s idle-kill plus 1s backoff should fit well under 10s"
+    );
+}
