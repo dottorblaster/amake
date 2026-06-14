@@ -1250,9 +1250,7 @@ prompt = "Hello"
         ])
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("--model").and(predicate::str::contains("opus")),
-        );
+        .stdout(predicate::str::contains("--model").and(predicate::str::contains("opus")));
 }
 
 #[test]
@@ -1320,7 +1318,9 @@ extra_args = ["--model", "opus"]
     let opus_pos = stdout
         .rfind("opus")
         .expect("expected 'opus' to appear in dry-run output");
-    let last_model_pos = stdout.rfind("--model").expect("expected '--model' to appear");
+    let last_model_pos = stdout
+        .rfind("--model")
+        .expect("expected '--model' to appear");
     // The last --model must be the extra_args one carrying "opus".
     let after_last = &stdout[last_model_pos..];
     assert!(

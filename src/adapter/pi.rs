@@ -34,9 +34,7 @@ impl Adapter for PiAdapter {
         );
 
         if auto_approve {
-            eprintln!(
-                "warning: auto_approve is set for pi but no known flag exists — ignoring"
-            );
+            eprintln!("warning: auto_approve is set for pi but no known flag exists — ignoring");
         }
 
         cmd.arg("-p");

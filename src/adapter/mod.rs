@@ -335,7 +335,10 @@ mod tests {
         let mut found = false;
         while let Some(a) = iter.next() {
             if a.to_string_lossy() == key
-                && iter.next().map(|v| v.to_string_lossy() == value).unwrap_or(false)
+                && iter
+                    .next()
+                    .map(|v| v.to_string_lossy() == value)
+                    .unwrap_or(false)
             {
                 found = true;
                 break;
@@ -344,7 +347,9 @@ mod tests {
         assert!(
             found,
             "expected {key} {value:?} in args, got {:?}",
-            args.iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()
+            args.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
         );
     }
 
