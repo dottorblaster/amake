@@ -40,7 +40,8 @@ fn adapters_lists_builtins() {
     amake().arg("adapters").assert().success().stdout(
         predicate::str::contains("claude-code")
             .and(predicate::str::contains("aider"))
-            .and(predicate::str::contains("copilot")),
+            .and(predicate::str::contains("copilot"))
+            .and(predicate::str::contains("pi")),
     );
 }
 

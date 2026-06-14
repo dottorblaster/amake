@@ -2,6 +2,7 @@ mod aider;
 mod claude_code;
 mod copilot;
 mod generic;
+mod pi;
 mod sandbox;
 
 use crate::config::Task;
@@ -39,6 +40,7 @@ impl AdapterRegistry {
         );
         adapters.insert("aider".into(), Box::new(aider::AiderAdapter));
         adapters.insert("copilot".into(), Box::new(copilot::CopilotAdapter));
+        adapters.insert("pi".into(), Box::new(pi::PiAdapter));
         Self { adapters }
     }
 
@@ -176,6 +178,68 @@ mod tests {
         assert_eq!(args, &["copilot", "suggest", "-t", "shell", "Suggest"]);
     }
 
+    // -- pi adapter tests --
+
+    #[test]
+    fn pi_basic() {
+        let adapter = pi::PiAdapter;
+        let task = make_task("Hello");
+        let cmd = adapter.build_command(&task, None, false, None);
+        assert_eq!(cmd.get_program(), "pi");
+        let args = get_args(&cmd);
+        assert_eq!(args, &["-p", "Hello"]);
+    }
+
+    #[test]
+    fn pi_auto_approve() {
+        let adapter = pi::PiAdapter;
+        let task = make_task("Hello");
+        // auto_approve=true emits a warning but passes no extra flags
+        let cmd = adapter.build_command(&task, None, true, None);
+        let args = get_args(&cmd);
+        assert_eq!(args, &["-p", "Hello"]);
+    }
+
+    #[test]
+    fn pi_with_files() {
+        let adapter = pi::PiAdapter;
+        let mut task = make_task("Hello");
+        task.files = vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_eq!(args, &["-p", "@a.rs", "@b.rs", "Hello"]);
+    }
+
+    #[test]
+    fn pi_with_files_and_extra_args() {
+        let adapter = pi::PiAdapter;
+        let mut task = make_task("Hi");
+        task.files = vec![PathBuf::from("src/main.rs")];
+        task.extra_args = vec!["--model".into(), "foo".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_eq!(args, &["-p", "@src/main.rs", "--model", "foo", "Hi"]);
+    }
+
+    #[test]
+    fn pi_sandbox_falls_back() {
+        let adapter = pi::PiAdapter;
+        let task = make_task("Fix");
+        let sandbox = SandboxConfig::default();
+        let cmd = adapter.build_command(&task, None, true, Some(&sandbox));
+        // pi has no clampdown agent, so it falls back to running directly
+        assert_eq!(cmd.get_program(), "pi");
+    }
+
+    #[test]
+    fn pi_workdir_set_when_not_sandboxed() {
+        let adapter = pi::PiAdapter;
+        let task = make_task("Hello");
+        let workdir = PathBuf::from("/my/project");
+        let cmd = adapter.build_command(&task, Some(&workdir), false, None);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/my/project")));
+    }
+
     #[test]
     fn generic_passthrough() {
         let adapter = GenericPassthrough::new("mytool");
@@ -244,6 +308,7 @@ mod tests {
         assert!(names.contains(&"claude-code"));
         assert!(names.contains(&"aider"));
         assert!(names.contains(&"copilot"));
+        assert!(names.contains(&"pi"));
     }
 
     #[test]
