@@ -40,6 +40,9 @@ impl Adapter for CopilotAdapter {
         }
 
         cmd.args(["copilot", "suggest", "-t", "shell"]);
+        if let Some(model) = &task.model {
+            cmd.arg("--model").arg(model);
+        }
         cmd.arg(&task.prompt);
         cmd.args(&task.extra_args);
 

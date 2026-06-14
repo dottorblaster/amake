@@ -95,6 +95,7 @@ mod tests {
             retry: None,
             idle_warn: None,
             idle_kill: None,
+            model: None,
         }
     }
 
@@ -325,5 +326,231 @@ mod tests {
         let workdir = PathBuf::from("/my/project");
         let cmd = adapter.build_command(&task, Some(&workdir), false, None);
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/my/project")));
+    }
+
+    // -- model flag --
+
+    fn assert_contains_pair(args: &[&std::ffi::OsStr], key: &str, value: &str) {
+        let mut iter = args.iter();
+        let mut found = false;
+        while let Some(a) = iter.next() {
+            if a.to_string_lossy() == key
+                && iter
+                    .next()
+                    .map(|v| v.to_string_lossy() == value)
+                    .unwrap_or(false)
+            {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "expected {key} {value:?} in args, got {:?}",
+            args.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn assert_does_not_contain(args: &[&std::ffi::OsStr], key: &str) {
+        for a in args {
+            assert_ne!(
+                a.to_string_lossy(),
+                key,
+                "unexpected {key} in args: {:?}",
+                args
+            );
+        }
+    }
+
+    #[test]
+    fn claude_code_model_set() {
+        let adapter = claude_code::ClaudeCodeAdapter;
+        let mut task = make_task("Hello");
+        task.model = Some("sonnet".into());
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_contains_pair(&args, "--model", "sonnet");
+    }
+
+    #[test]
+    fn claude_code_model_unset() {
+        let adapter = claude_code::ClaudeCodeAdapter;
+        let task = make_task("Hello");
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_does_not_contain(&args, "--model");
+    }
+
+    #[test]
+    fn claude_code_model_before_extra_args() {
+        let adapter = claude_code::ClaudeCodeAdapter;
+        let mut task = make_task("Hello");
+        task.model = Some("sonnet".into());
+        task.extra_args = vec!["--model".into(), "opus".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        // The config's --model comes first; the extra_args --model comes later and wins.
+        let pos_sonnet = args
+            .iter()
+            .position(|a| a.to_string_lossy() == "--model")
+            .expect("first --model");
+        assert_eq!(args[pos_sonnet + 1], "sonnet");
+        assert_eq!(args[pos_sonnet + 2], "--model");
+        assert_eq!(args[pos_sonnet + 3], "opus");
+    }
+
+    #[test]
+    fn aider_model_set() {
+        let adapter = aider::AiderAdapter;
+        let mut task = make_task("Fix it");
+        task.model = Some("gpt-4".into());
+        let cmd = adapter.build_command(&task, None, true, None);
+        let args = get_args(&cmd);
+        assert_contains_pair(&args, "--model", "gpt-4");
+    }
+
+    #[test]
+    fn aider_model_unset() {
+        let adapter = aider::AiderAdapter;
+        let task = make_task("Fix it");
+        let cmd = adapter.build_command(&task, None, true, None);
+        let args = get_args(&cmd);
+        assert_does_not_contain(&args, "--model");
+    }
+
+    #[test]
+    fn aider_model_before_extra_args() {
+        let adapter = aider::AiderAdapter;
+        let mut task = make_task("Fix it");
+        task.model = Some("gpt-4".into());
+        task.extra_args = vec!["--model".into(), "opus".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        let pos = args
+            .iter()
+            .position(|a| a.to_string_lossy() == "--model")
+            .unwrap();
+        assert_eq!(args[pos + 1], "gpt-4");
+        assert_eq!(args[pos + 2], "--model");
+        assert_eq!(args[pos + 3], "opus");
+    }
+
+    #[test]
+    fn copilot_model_set() {
+        let adapter = copilot::CopilotAdapter;
+        let mut task = make_task("Suggest");
+        task.model = Some("gpt-4o".into());
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_contains_pair(&args, "--model", "gpt-4o");
+    }
+
+    #[test]
+    fn copilot_model_unset() {
+        let adapter = copilot::CopilotAdapter;
+        let task = make_task("Suggest");
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_does_not_contain(&args, "--model");
+    }
+
+    #[test]
+    fn copilot_model_before_extra_args() {
+        let adapter = copilot::CopilotAdapter;
+        let mut task = make_task("Suggest");
+        task.model = Some("gpt-4o".into());
+        task.extra_args = vec!["--model".into(), "haiku".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        // For copilot, the prompt sits between the config --model and the
+        // extra_args --model, so the extra-args value lands later in argv and
+        // wins. Find the LAST --model occurrence and confirm it carries "haiku".
+        let last_pos = args
+            .iter()
+            .rposition(|a| a.to_string_lossy() == "--model")
+            .unwrap();
+        assert_eq!(args[last_pos + 1], "haiku");
+        // The config value still appears earlier in argv.
+        let first_pos = args
+            .iter()
+            .position(|a| a.to_string_lossy() == "--model")
+            .unwrap();
+        assert_eq!(args[first_pos + 1], "gpt-4o");
+    }
+
+    #[test]
+    fn pi_model_set() {
+        let adapter = pi::PiAdapter;
+        let mut task = make_task("Hello");
+        task.model = Some("claude".into());
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_contains_pair(&args, "--model", "claude");
+    }
+
+    #[test]
+    fn pi_model_unset() {
+        let adapter = pi::PiAdapter;
+        let task = make_task("Hello");
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_does_not_contain(&args, "--model");
+    }
+
+    #[test]
+    fn pi_model_before_extra_args() {
+        let adapter = pi::PiAdapter;
+        let mut task = make_task("Hi");
+        task.files = vec![PathBuf::from("src/main.rs")];
+        task.model = Some("claude".into());
+        task.extra_args = vec!["--model".into(), "gpt-4".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        // --model from config comes after the @file tokens but before extra_args
+        let pos = args
+            .iter()
+            .position(|a| a.to_string_lossy() == "--model")
+            .unwrap();
+        assert_eq!(args[pos + 1], "claude");
+        assert_eq!(args[pos + 2], "--model");
+        assert_eq!(args[pos + 3], "gpt-4");
+    }
+
+    #[test]
+    fn generic_passthrough_model_set() {
+        let adapter = GenericPassthrough::new("mytool");
+        let mut task = make_task("Do stuff");
+        task.model = Some("sonnet".into());
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_contains_pair(&args, "--model", "sonnet");
+    }
+
+    #[test]
+    fn generic_passthrough_model_unset() {
+        let adapter = GenericPassthrough::new("mytool");
+        let task = make_task("Do stuff");
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_does_not_contain(&args, "--model");
+    }
+
+    #[test]
+    fn generic_passthrough_model_before_extra_args() {
+        let adapter = GenericPassthrough::new("mytool");
+        let mut task = make_task("Do stuff");
+        task.model = Some("sonnet".into());
+        task.extra_args = vec!["--model".into(), "opus".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        let pos = args
+            .iter()
+            .position(|a| a.to_string_lossy() == "--model")
+            .unwrap();
+        assert_eq!(args[pos + 1], "sonnet");
+        assert_eq!(args[pos + 2], "--model");
+        assert_eq!(args[pos + 3], "opus");
     }
 }

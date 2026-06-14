@@ -1191,3 +1191,170 @@ on_timeout = true
         "two attempts of ~1s idle-kill plus 1s backoff should fit well under 10s"
     );
 }
+
+// ── Model flag ──
+
+#[test]
+fn dry_run_emits_model_flag() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.greet]
+tool = "claude-code"
+prompt = "Hello"
+model = "sonnet"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("[greet]")
+                .and(predicate::str::contains("claude"))
+                .and(predicate::str::contains("--model"))
+                .and(predicate::str::contains("sonnet")),
+        );
+}
+
+#[test]
+fn dry_run_inherits_default_model() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "claude-code"
+model = "opus"
+
+[tasks.greet]
+prompt = "Hello"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model").and(predicate::str::contains("opus")));
+}
+
+#[test]
+fn dry_run_task_model_overrides_default() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[defaults]
+tool = "claude-code"
+model = "opus"
+
+[tasks.greet]
+prompt = "Hello"
+model = "sonnet"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sonnet").and(predicate::str::contains("opus").not()));
+}
+
+#[test]
+fn extra_args_model_overrides_config_model() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.greet]
+tool = "claude-code"
+prompt = "Hello"
+model = "sonnet"
+extra_args = ["--model", "opus"]
+"#,
+    );
+
+    let output = amake()
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    // The extra_args --model should appear later in the rendered command
+    // and therefore "win" against the config's --model.
+    let sonnet_pos = stdout
+        .find("sonnet")
+        .expect("expected 'sonnet' to appear in dry-run output");
+    let opus_pos = stdout
+        .rfind("opus")
+        .expect("expected 'opus' to appear in dry-run output");
+    let last_model_pos = stdout
+        .rfind("--model")
+        .expect("expected '--model' to appear");
+    // The last --model must be the extra_args one carrying "opus".
+    let after_last = &stdout[last_model_pos..];
+    assert!(
+        after_last.contains("opus"),
+        "expected last --model to carry 'opus', got tail: {after_last:?}"
+    );
+    // 'sonnet' must appear before 'opus' in the rendered command.
+    assert!(
+        sonnet_pos < opus_pos,
+        "expected 'sonnet' to appear before 'opus', got:\n{stdout}"
+    );
+}
+
+#[test]
+fn dry_run_no_model_when_unset() {
+    let dir = TempDir::new().unwrap();
+    setup_amakefile(
+        &dir,
+        r#"
+[tasks.greet]
+tool = "claude-code"
+prompt = "Hello"
+"#,
+    );
+
+    amake()
+        .args([
+            "run",
+            "--dry-run",
+            "-f",
+            dir.path().join("Amakefile").to_str().unwrap(),
+            "greet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model").not());
+}

@@ -59,10 +59,13 @@ workdir = "./src"       # optional, sets cwd for all tasks
 tool = "aider"                          # override the default tool
 prompt = "Refactor error handling to use thiserror."
 files = ["src/main.rs", "src/error.rs"] # context files passed to the tool
+model = "gpt-4"                         # model to use (passed as --model to the tool)
 auto_approve = true                     # tool-specific "don't ask" flag
-extra_args = ["--model", "gpt-4"]       # passed verbatim to the tool CLI
+extra_args = ["--verbose"]              # passed verbatim to the tool CLI (last-occurrence wins for any duplicate flag)
 timeout = 300                           # seconds; kill the child if it runs longer (optional)
 ```
+
+`model` is just a first-class alias for the tool's own `--model` flag — useful for tools like `claude-code` where the flag spelling is the same, and easier to read than `extra_args = ["--model", "gpt-4"]`. It can be set on a task or under `[defaults]`. If both a task and `extra_args` set `--model`, the value in `extra_args` comes later in argv and wins (every tool in the table uses last-occurrence-wins for duplicate flags).
 
 ### Timeout and retry
 
@@ -149,12 +152,12 @@ copilot
 pi
 ```
 
-| Adapter | Binary | Auto-approve | Notes |
-|---|---|---|---|
-| `claude-code` | `claude` | `--dangerously-skip-permissions` | Prompt via `--print` |
-| `aider` | `aider` | `--yes` | Prompt via `--message` |
-| `copilot` | `gh` | (none) | Runs `gh copilot suggest -t shell` |
-| `pi` | `pi` | (none) | Prompt via `-p`; context files via inline `@path` |
+| Adapter | Binary | Auto-approve | Model | Notes |
+|---|---|---|---|---|
+| `claude-code` | `claude` | `--dangerously-skip-permissions` | `--model <name>` | Prompt via `--print` |
+| `aider` | `aider` | `--yes` | `--model <name>` | Prompt via `--message` |
+| `copilot` | `gh` | (none) | `--model <name>` | Runs `gh copilot suggest -t shell` |
+| `pi` | `pi` | (none) | `--model <name>` | Prompt via `-p`; context files via inline `@path` |
 
 If the tool name doesn't match a built-in, amake treats it as a bare binary and passes `extra_args` + prompt as a positional arg. Good enough for most things:
 
@@ -265,7 +268,7 @@ tool = "aider"
 prompt = "Refactor error handling to use thiserror."
 files = ["src/main.rs", "src/error.rs"]
 auto_approve = true
-extra_args = ["--model", "gpt-4"]
+model = "gpt-4"
 ```
 
 ```

@@ -15,6 +15,7 @@ pub struct Defaults {
     pub retry: Option<RetryConfig>,
     pub idle_warn: Option<u64>,
     pub idle_kill: Option<u64>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -75,6 +76,7 @@ struct RawTask {
     retry: Option<RetryConfig>,
     idle_warn: Option<u64>,
     idle_kill: Option<u64>,
+    model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +94,7 @@ pub struct Task {
     pub retry: Option<RetryConfig>,
     pub idle_warn: Option<u64>,
     pub idle_kill: Option<u64>,
+    pub model: Option<String>,
 }
 
 impl From<RawTask> for Task {
@@ -116,6 +119,7 @@ impl From<RawTask> for Task {
             retry: raw.retry,
             idle_warn: raw.idle_warn,
             idle_kill: raw.idle_kill,
+            model: raw.model,
         }
     }
 }
@@ -194,6 +198,13 @@ impl Config {
             .or(self.defaults.tool.as_ref())
             .cloned()
             .ok_or_else(|| Error::NoTool(task_name.into()))
+    }
+
+    pub fn effective_model(&self, task: &Task) -> Option<String> {
+        task.model
+            .as_ref()
+            .or(self.defaults.model.as_ref())
+            .cloned()
     }
 
     pub fn effective_workdir(&self, task: &Task) -> Option<PathBuf> {
@@ -671,5 +682,59 @@ backoff = "exponential"
         let effective = cfg.effective_retry(&cfg.tasks["t"]).unwrap();
         assert_eq!(effective.attempts, 5);
         assert_eq!(effective.backoff, BackoffStrategy::Exponential);
+    }
+
+    #[test]
+    fn parses_model_field() {
+        let toml = r#"
+[tasks.t]
+prompt = "x"
+model = "sonnet"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        assert_eq!(cfg.tasks["t"].model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn effective_model_inherits_default() {
+        let toml = r#"
+[defaults]
+model = "opus"
+
+[tasks.t]
+prompt = "x"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        assert_eq!(
+            cfg.effective_model(&cfg.tasks["t"]).as_deref(),
+            Some("opus")
+        );
+    }
+
+    #[test]
+    fn effective_model_task_overrides_default() {
+        let toml = r#"
+[defaults]
+model = "opus"
+
+[tasks.t]
+prompt = "x"
+model = "sonnet"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        assert_eq!(
+            cfg.effective_model(&cfg.tasks["t"]).as_deref(),
+            Some("sonnet")
+        );
+    }
+
+    #[test]
+    fn effective_model_none_when_unset() {
+        let toml = r#"
+[tasks.t]
+prompt = "x"
+"#;
+        let cfg = Config::from_str(toml, Path::new("Amakefile")).unwrap();
+        assert!(cfg.effective_model(&cfg.tasks["t"]).is_none());
     }
 }

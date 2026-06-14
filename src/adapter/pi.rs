@@ -34,9 +34,7 @@ impl Adapter for PiAdapter {
         );
 
         if auto_approve {
-            eprintln!(
-                "warning: auto_approve is set for pi but no known flag exists — ignoring"
-            );
+            eprintln!("warning: auto_approve is set for pi but no known flag exists — ignoring");
         }
 
         cmd.arg("-p");
@@ -46,6 +44,10 @@ impl Adapter for PiAdapter {
         // spaces are preserved by the kernel's argv boundary.
         for file in &task.files {
             cmd.arg(format!("@{}", file.display()));
+        }
+
+        if let Some(model) = &task.model {
+            cmd.arg("--model").arg(model);
         }
 
         cmd.args(&task.extra_args);
