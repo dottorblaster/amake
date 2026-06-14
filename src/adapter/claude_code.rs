@@ -43,6 +43,10 @@ impl Adapter for ClaudeCodeAdapter {
             cmd.arg("--file").arg(file);
         }
 
+        if let Some(model) = &task.model {
+            cmd.arg("--model").arg(model);
+        }
+
         cmd.args(&task.extra_args);
         cmd.arg(&task.prompt);
 

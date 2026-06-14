@@ -48,6 +48,10 @@ impl Adapter for PiAdapter {
             cmd.arg(format!("@{}", file.display()));
         }
 
+        if let Some(model) = &task.model {
+            cmd.arg("--model").arg(model);
+        }
+
         cmd.args(&task.extra_args);
         cmd.arg(&task.prompt);
 

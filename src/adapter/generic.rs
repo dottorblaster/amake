@@ -50,6 +50,10 @@ impl Adapter for GenericPassthrough {
             );
         }
 
+        if let Some(model) = &task.model {
+            cmd.arg("--model").arg(model);
+        }
+
         cmd.args(&task.extra_args);
         cmd.arg(&task.prompt);
 

@@ -43,6 +43,10 @@ impl Adapter for AiderAdapter {
             cmd.arg("--file").arg(file);
         }
 
+        if let Some(model) = &task.model {
+            cmd.arg("--model").arg(model);
+        }
+
         cmd.args(&task.extra_args);
 
         apply_workdir(&mut cmd, sandboxed, workdir);

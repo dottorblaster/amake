@@ -163,6 +163,7 @@ pub fn run(config: &Config, targets: &[String], opts: &RunOptions) -> Result<(),
 
         let mut rendered_task = task.clone();
         rendered_task.prompt = rendered_prompt;
+        rendered_task.model = config.effective_model(task);
 
         let resolved = registry.resolve_or_generic(&tool);
         let adapter = resolved.adapter();
