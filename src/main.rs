@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "amake", about = "A task runner for AI CLI tools")]
+#[command(name = "amake", version, about = "A task runner for AI CLI tools")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
