@@ -1,0 +1,6 @@
+[tasks.t]
+tool = "echo"
+prompt = "hi"
+
+[tasks.t.retry]
+attempts = 0

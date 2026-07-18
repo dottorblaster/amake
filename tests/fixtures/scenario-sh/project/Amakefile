@@ -1,0 +1,27 @@
+[tasks.stalled]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "echo hi; sleep 60"]
+idle_kill = 2
+
+[tasks.slowish]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "echo hi; sleep 3"]
+idle_warn = 1
+
+[tasks.cat]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "cat"]
+
+[tasks.stalled-retry]
+tool = "sh"
+prompt = ""
+extra_args = ["-c", "echo hi; sleep 30"]
+idle_kill = 1
+
+[tasks.stalled-retry.retry]
+attempts = 2
+initial_delay = 1
+on_timeout = true

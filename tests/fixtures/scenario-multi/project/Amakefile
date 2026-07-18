@@ -1,0 +1,52 @@
+[defaults]
+tool = "echo"
+
+[tasks.hello]
+prompt = "Say hello"
+
+[tasks.build]
+prompt = "Build the project"
+
+[tasks.greet]
+prompt = "Hello world"
+
+[tasks.var]
+prompt = "{{vars.x}}"
+
+[tasks.var-msg]
+prompt = "got: {{vars.msg}}"
+
+[tasks.var-body]
+prompt = "{{vars.body}}"
+
+[tasks.var-bracket]
+prompt = "[{{vars.x}}]"
+
+[tasks.env]
+prompt = "Hello {{env.AMAKE_TEST_NAME}}"
+
+[tasks.first]
+prompt = "Step 1"
+
+[tasks.second]
+prompt = "Step 2"
+depends = ["first"]
+
+[tasks.a]
+prompt = "A"
+depends = ["b"]
+
+[tasks.b]
+prompt = "B"
+depends = ["a"]
+
+[tasks.greet-vars]
+prompt = "Hello {{vars.name}}"
+
+[tasks.t]
+prompt = "hi"
+timeout = 60
+
+[tasks.t.retry]
+backoff = "exponential"
+attempts = 3

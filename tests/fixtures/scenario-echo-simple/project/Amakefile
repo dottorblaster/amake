@@ -1,0 +1,3 @@
+[tasks.hello]
+tool = "echo"
+prompt = "Hi"

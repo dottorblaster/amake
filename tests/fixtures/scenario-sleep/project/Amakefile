@@ -1,0 +1,8 @@
+[tasks.slow]
+tool = "sleep"
+prompt = "10"
+timeout = 1
+
+[tasks.slow.retry]
+attempts = 3
+on_timeout = false

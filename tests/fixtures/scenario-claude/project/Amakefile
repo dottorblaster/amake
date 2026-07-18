@@ -1,0 +1,19 @@
+[tasks.greet]
+tool = "claude-code"
+prompt = "Hello"
+model = "sonnet"
+
+[tasks.greet-opus]
+tool = "claude-code"
+prompt = "Hello"
+model = "opus"
+
+[tasks.default-model]
+tool = "claude-code"
+prompt = "Hello"
+
+[tasks.extra-args]
+tool = "claude-code"
+prompt = "Hello"
+model = "sonnet"
+extra_args = ["--model", "opus"]

@@ -1,0 +1,23 @@
+[tasks.hello]
+tool = "echo"
+prompt = "hi"
+
+[tasks.discovered]
+tool = "echo"
+prompt = "wrong"
+
+[tasks.greet]
+tool = "echo"
+prompt = "hello from amake"
+
+[tasks.env-test]
+tool = "echo"
+prompt = "Hello {{env.AMAKE_TEST_NAME}}"
+
+[tasks.greet-vars]
+tool = "echo"
+prompt = "Hello {{vars.who}}"
+
+[tasks.custom]
+tool = "echo"
+prompt = "right"
