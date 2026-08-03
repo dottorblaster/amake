@@ -8,8 +8,63 @@ fn amake() -> Command {
     Command::cargo_bin("amake").unwrap()
 }
 
-fn setup_amakefile(dir: &TempDir, content: &str) {
-    fs::write(dir.path().join("Amakefile"), content).unwrap();
+fn copy_dir(src: std::path::PathBuf, dst: &std::path::Path) {
+    for entry in fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        let file_type = entry.file_type().unwrap();
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            fs::create_dir_all(&target).unwrap();
+            copy_dir(entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+// ── Fixture-based test helpers ──
+
+pub struct Scenario {
+    _tmp: TempDir,
+    pub home: std::path::PathBuf,
+    pub project: std::path::PathBuf,
+}
+
+/// Root of the fixtures directory.
+fn fixtures_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// Copy a scenario into a temporary directory and return a `Scenario`.
+/// The returned `Scenario` keeps the `TempDir` alive until the test ends.
+/// Set `HOME` to `scenario.home` and run amake from `scenario.project`.
+fn copy_scenario_temp(scenario_name: &str) -> Scenario {
+    let tmp = TempDir::new().unwrap();
+    let src = fixtures_root().join(format!("scenario-{scenario_name}"));
+    if src.exists() {
+        copy_dir(src, tmp.path());
+    }
+    let home = tmp.path().to_path_buf();
+    let project = home.join("project");
+    Scenario {
+        _tmp: tmp,
+        home,
+        project,
+    }
+}
+
+#[allow(dead_code)]
+fn no_model_home() -> (TempDir, std::path::PathBuf) {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().to_path_buf();
+    let config_dir = home.join(".config/amake");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[profile.amake-medium]\ntool = \"sh\"\n",
+    )
+    .unwrap();
+    (dir, home)
 }
 
 // ── No subcommand ──
@@ -49,10 +104,10 @@ fn adapters_lists_builtins() {
 
 #[test]
 fn list_no_amakefile_errors() {
-    let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("empty");
     amake()
         .arg("list")
-        .current_dir(dir.path())
+        .current_dir(&s.home)
         .assert()
         .failure()
         .stderr(predicate::str::contains("Amakefile not found"));
@@ -60,23 +115,11 @@ fn list_no_amakefile_errors() {
 
 #[test]
 fn list_shows_tasks() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.hello]
-prompt = "Say hello"
-
-[tasks.build]
-prompt = "Build the project"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args(["list", "-f", dir.path().join("Amakefile").to_str().unwrap()])
+        .current_dir(&s.project)
+        .args(["list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("hello").and(predicate::str::contains("build")));
@@ -84,11 +127,11 @@ prompt = "Build the project"
 
 #[test]
 fn list_empty_amakefile() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(&dir, "");
+    let s = copy_scenario_temp("empty");
 
     amake()
-        .args(["list", "-f", dir.path().join("Amakefile").to_str().unwrap()])
+        .current_dir(&s.project)
+        .args(["list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No tasks defined."));
@@ -98,10 +141,10 @@ fn list_empty_amakefile() {
 
 #[test]
 fn run_no_amakefile_errors() {
-    let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("empty");
     amake()
         .args(["run", "hello"])
-        .current_dir(dir.path())
+        .current_dir(&s.home)
         .assert()
         .failure()
         .stderr(predicate::str::contains("Amakefile not found"));
@@ -109,23 +152,11 @@ fn run_no_amakefile_errors() {
 
 #[test]
 fn run_unknown_task_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.hello]
-prompt = "Hi"
-tool = "echo"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "nonexistent",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "nonexistent"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown task"));
@@ -133,22 +164,12 @@ tool = "echo"
 
 #[test]
 fn run_no_tool_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.hello]
-prompt = "Hi"
-"#,
-    );
+    let s = copy_scenario_temp("no-tool");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "hello",
-        ])
+        .current_dir(&s.project)
+        .arg("run")
+        .arg("hello")
         .assert()
         .failure()
         .stderr(predicate::str::contains("no tool specified"));
@@ -161,26 +182,11 @@ fn run_missing_task_arg_errors() {
 
 #[test]
 fn run_dry_run_prints_command() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.greet]
-prompt = "Hello world"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "greet"])
         .assert()
         .success()
         .stdout(
@@ -192,28 +198,11 @@ prompt = "Hello world"
 
 #[test]
 fn run_dry_run_with_vars() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.greet]
-prompt = "Hello {{vars.name}}"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--var",
-            "name=World",
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "--var", "name=World", "greet-vars"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello World"));
@@ -221,26 +210,11 @@ prompt = "Hello {{vars.name}}"
 
 #[test]
 fn run_dry_run_missing_var_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.greet]
-prompt = "Hello {{vars.name}}"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "greet-vars"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unresolved variable"));
@@ -248,30 +222,11 @@ prompt = "Hello {{vars.name}}"
 
 #[test]
 fn run_dry_run_dependency_order() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.first]
-prompt = "Step 1"
-
-[tasks.second]
-prompt = "Step 2"
-depends = ["first"]
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     let output = amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "second",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "second"])
         .assert()
         .success()
         .get_output()
@@ -289,31 +244,11 @@ depends = ["first"]
 
 #[test]
 fn run_dry_run_cycle_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.a]
-prompt = "A"
-depends = ["b"]
-
-[tasks.b]
-prompt = "B"
-depends = ["a"]
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "a",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("cycle"));
@@ -321,23 +256,12 @@ depends = ["a"]
 
 #[test]
 fn run_executes_echo_tool() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.greet]
-tool = "echo"
-prompt = "hello from amake"
-"#,
-    );
+    let s = copy_scenario_temp("tool-echo");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .arg("run")
+        .arg("greet")
         .assert()
         .success()
         .stdout(predicate::str::contains("hello from amake"));
@@ -345,23 +269,11 @@ prompt = "hello from amake"
 
 #[test]
 fn run_task_failure_exits_nonzero() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.fail]
-tool = "false"
-prompt = ""
-"#,
-    );
+    let s = copy_scenario_temp("false");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "fail",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "fail"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("failed"));
@@ -369,29 +281,11 @@ prompt = ""
 
 #[test]
 fn run_keep_going_continues_after_failure() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.fail]
-tool = "false"
-prompt = ""
-
-[tasks.ok]
-tool = "echo"
-prompt = "still running"
-"#,
-    );
+    let s = copy_scenario_temp("false");
 
     amake()
-        .args([
-            "run",
-            "-k",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "fail",
-            "ok",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "-k", "fail", "ok"])
         .assert()
         .failure()
         .stdout(predicate::str::contains("still running"))
@@ -402,11 +296,11 @@ prompt = "still running"
 
 #[test]
 fn invalid_toml_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(&dir, "this is not valid toml [[[");
+    let s = copy_scenario_temp("invalid");
 
     amake()
-        .args(["list", "-f", dir.path().join("Amakefile").to_str().unwrap()])
+        .current_dir(&s.project)
+        .args(["list"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("failed to parse"));
@@ -414,25 +308,11 @@ fn invalid_toml_errors() {
 
 #[test]
 fn run_bad_var_format_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.t]
-tool = "echo"
-prompt = "hi"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--var",
-            "no-equals-sign",
-            "t",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--var", "no-equals-sign", "t"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("KEY=VALUE"));
@@ -442,9 +322,9 @@ prompt = "hi"
 
 #[test]
 fn discovers_amake_toml() {
-    let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     fs::write(
-        dir.path().join("amake.toml"),
+        s.home.join("amake.toml"),
         r#"
 [tasks.hello]
 tool = "echo"
@@ -455,7 +335,7 @@ prompt = "found it"
 
     amake()
         .args(["list"])
-        .current_dir(dir.path())
+        .current_dir(&s.project)
         .assert()
         .success()
         .stdout(predicate::str::contains("hello"));
@@ -463,19 +343,11 @@ prompt = "found it"
 
 #[test]
 fn file_flag_overrides_discovery() {
-    let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     // Put an Amakefile in the dir (would be found by discovery)
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.discovered]
-tool = "echo"
-prompt = "wrong"
-"#,
-    );
 
     // Put a custom config elsewhere
-    let custom = dir.path().join("custom.toml");
+    let custom = s.home.join("custom.toml");
     fs::write(
         &custom,
         r#"
@@ -488,7 +360,7 @@ prompt = "right"
 
     amake()
         .args(["list", "-f", custom.to_str().unwrap()])
-        .current_dir(dir.path())
+        .current_dir(&s.project)
         .assert()
         .success()
         .stdout(
@@ -500,25 +372,12 @@ prompt = "right"
 
 #[test]
 fn sandbox_flag_without_clampdown_errors() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.t]
-tool = "echo"
-prompt = "hi"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     // Only fails if clampdown is not installed, which is the expected CI case
     let result = amake()
-        .args([
-            "run",
-            "--sandbox",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "t",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--sandbox", "t"])
         .assert();
 
     // If clampdown happens to be installed, the task succeeds; otherwise it errors
@@ -534,24 +393,12 @@ prompt = "hi"
 
 #[test]
 fn run_env_variable_interpolation() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.greet]
-tool = "echo"
-prompt = "Hello {{env.AMAKE_TEST_NAME}}"
-"#,
-    );
+    let s = copy_scenario_temp("tool-echo");
 
     amake()
+        .current_dir(&s.project)
         .env("AMAKE_TEST_NAME", "TestUser")
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .args(["run", "env-test"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello TestUser"));
@@ -559,26 +406,11 @@ prompt = "Hello {{env.AMAKE_TEST_NAME}}"
 
 #[test]
 fn run_amakefile_var_interpolation() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[vars]
-who = "world"
-
-[tasks.greet]
-tool = "echo"
-prompt = "Hello {{vars.who}}"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "greet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello world"));
@@ -586,26 +418,11 @@ prompt = "Hello {{vars.who}}"
 
 #[test]
 fn run_amakefile_var_command_substitution() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[vars]
-who = "$(echo alice)"
-
-[tasks.greet]
-tool = "echo"
-prompt = "Hello {{vars.who}}"
-"#,
-    );
+    let s = copy_scenario_temp("vars-cmd");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "greet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello alice"));
@@ -613,28 +430,11 @@ prompt = "Hello {{vars.who}}"
 
 #[test]
 fn run_cli_var_overrides_amakefile_var() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[vars]
-who = "world"
-
-[tasks.greet]
-tool = "echo"
-prompt = "Hello {{vars.who}}"
-"#,
-    );
+    let s = copy_scenario_temp("vars");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--var",
-            "who=bob",
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--var", "who=bob", "greet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello bob"));
@@ -657,28 +457,13 @@ fn create_fake_editor(dir: &TempDir, content: &str) -> std::path::PathBuf {
 #[test]
 fn edit_var_populates_variable() {
     let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     let editor = create_fake_editor(&dir, "world from editor");
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.greet]
-prompt = "Hello {{vars.name}}"
-"#,
-    );
 
     amake()
+        .current_dir(&s.project)
         .env("EDITOR", editor.to_str().unwrap())
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--edit-var",
-            "name",
-            "greet",
-        ])
+        .args(["run", "--edit-var", "name", "greet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello world from editor"));
@@ -686,9 +471,9 @@ prompt = "Hello {{vars.name}}"
 
 #[test]
 fn edit_var_strips_comment_lines() {
-    let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     // Editor that preserves the comment header and appends content
-    let script = dir.path().join("fake-editor.sh");
+    let script = s.home.join("fake-editor.sh");
     fs::write(
         &script,
         "#!/bin/sh\necho '# this is a comment' >> \"$1\"\necho 'actual value' >> \"$1\"\n",
@@ -696,27 +481,10 @@ fn edit_var_strips_comment_lines() {
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.t]
-prompt = "[{{vars.x}}]"
-"#,
-    );
-
     amake()
+        .current_dir(&s.project)
         .env("EDITOR", script.to_str().unwrap())
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--edit-var",
-            "x",
-            "t",
-        ])
+        .args(["run", "--edit-var", "x", "t"])
         .assert()
         .success()
         .stdout(predicate::str::contains("[actual value]"));
@@ -725,29 +493,13 @@ prompt = "[{{vars.x}}]"
 #[test]
 fn edit_var_dry_run() {
     let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     let editor = create_fake_editor(&dir, "edited content");
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.t]
-prompt = "got: {{vars.msg}}"
-"#,
-    );
 
     amake()
+        .current_dir(&s.project)
         .env("EDITOR", editor.to_str().unwrap())
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--edit-var",
-            "msg",
-            "t",
-        ])
+        .args(["run", "--dry-run", "--edit-var", "msg", "t"])
         .assert()
         .success()
         .stdout(predicate::str::contains("got: edited content"));
@@ -756,31 +508,14 @@ prompt = "got: {{vars.msg}}"
 #[test]
 fn edit_var_overrides_inline_var() {
     let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     let editor = create_fake_editor(&dir, "from editor");
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.t]
-prompt = "{{vars.x}}"
-"#,
-    );
 
     // --var first, then --edit-var should override
     amake()
+        .current_dir(&s.project)
         .env("EDITOR", editor.to_str().unwrap())
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--var",
-            "x=from cli",
-            "--edit-var",
-            "x",
-            "t",
-        ])
+        .args(["run", "--var", "x=from cli", "--edit-var", "x", "t"])
         .assert()
         .success()
         .stdout(predicate::str::contains("from editor"));
@@ -788,30 +523,16 @@ prompt = "{{vars.x}}"
 
 #[test]
 fn edit_var_editor_failure_errors() {
-    let dir = TempDir::new().unwrap();
-    let script = dir.path().join("bad-editor.sh");
+    let _dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
+    let script = s.home.join("bad-editor.sh");
     fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.t]
-tool = "echo"
-prompt = "{{vars.x}}"
-"#,
-    );
-
     amake()
+        .current_dir(&s.project)
         .env("EDITOR", script.to_str().unwrap())
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--edit-var",
-            "x",
-            "t",
-        ])
+        .args(["run", "--edit-var", "x", "t"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("editor"));
@@ -820,28 +541,13 @@ prompt = "{{vars.x}}"
 #[test]
 fn edit_var_multiline_content() {
     let dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
     let editor = create_fake_editor(&dir, "line one\nline two\nline three");
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "echo"
-
-[tasks.t]
-prompt = "{{vars.body}}"
-"#,
-    );
 
     amake()
+        .current_dir(&s.project)
         .env("EDITOR", editor.to_str().unwrap())
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "--edit-var",
-            "body",
-            "t",
-        ])
+        .args(["run", "--edit-var", "body", "t"])
         .assert()
         .success()
         .stdout(
@@ -855,25 +561,12 @@ prompt = "{{vars.body}}"
 
 #[test]
 fn task_timeout_kills_runaway_child() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.slow]
-tool = "sleep"
-prompt = "10"
-timeout = 1
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     let start = std::time::Instant::now();
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "slow",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "slow"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("timed out"));
@@ -885,35 +578,17 @@ timeout = 1
 
 #[test]
 fn task_retry_eventually_succeeds() {
-    let dir = TempDir::new().unwrap();
-    let marker = dir.path().join("marker");
-    let script = format!(
+    let _dir = TempDir::new().unwrap();
+    let s = copy_scenario_temp("multi");
+    let marker = s.home.join("marker");
+    let _script = format!(
         "test -f {marker} || (touch {marker}; exit 1)",
         marker = marker.display()
     );
-    setup_amakefile(
-        &dir,
-        &format!(
-            r#"
-[tasks.flaky]
-tool = "sh"
-prompt = ""
-extra_args = ["-c", {script:?}]
-
-[tasks.flaky.retry]
-attempts = 2
-initial_delay = 1
-"#,
-        ),
-    );
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "flaky",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "flaky"])
         .assert()
         .success()
         .stderr(predicate::str::contains("retrying"));
@@ -921,27 +596,11 @@ initial_delay = 1
 
 #[test]
 fn retry_exhausted_reports_attempt_count() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.always-fails]
-tool = "false"
-prompt = ""
-
-[tasks.always-fails.retry]
-attempts = 2
-initial_delay = 1
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "always-fails",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "always-fails"])
         .assert()
         .failure()
         .stderr(
@@ -951,29 +610,12 @@ initial_delay = 1
 
 #[test]
 fn timeout_with_on_timeout_false_does_not_retry() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.slow]
-tool = "sleep"
-prompt = "10"
-timeout = 1
-
-[tasks.slow.retry]
-attempts = 3
-on_timeout = false
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     let start = std::time::Instant::now();
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "slow",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "slow"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("timed out"));
@@ -985,29 +627,11 @@ on_timeout = false
 
 #[test]
 fn dry_run_annotates_timeout_and_retry() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.t]
-tool = "echo"
-prompt = "hi"
-timeout = 60
-
-[tasks.t.retry]
-attempts = 3
-backoff = "exponential"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "t",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "t"])
         .assert()
         .success()
         .stdout(predicate::str::contains("timeout 60s").and(predicate::str::contains("retry 3x")));
@@ -1015,26 +639,11 @@ backoff = "exponential"
 
 #[test]
 fn rejects_zero_attempts() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.t]
-tool = "echo"
-prompt = "hi"
-
-[tasks.t.retry]
-attempts = 0
-"#,
-    );
+    let s = copy_scenario_temp("retry-zero");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "t",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "t"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid retry config"));
@@ -1044,26 +653,12 @@ attempts = 0
 
 #[test]
 fn idle_kill_terminates_stalled_task() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.stalled]
-tool = "sh"
-prompt = ""
-extra_args = ["-c", "echo hi; sleep 60"]
-idle_kill = 2
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     let start = std::time::Instant::now();
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "stalled",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "stalled"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("killed after").and(predicate::str::contains("silence")));
@@ -1075,25 +670,11 @@ idle_kill = 2
 
 #[test]
 fn idle_warn_only_emits_warning_but_succeeds() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.slowish]
-tool = "sh"
-prompt = ""
-extra_args = ["-c", "echo hi; sleep 3"]
-idle_warn = 1
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "slowish",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "slowish"])
         .assert()
         .success()
         .stderr(predicate::str::contains("idle for"));
@@ -1104,25 +685,12 @@ fn closed_stdin_makes_cat_exit_immediately() {
     // `cat` with no args reads from stdin. With Stdio::null, the read sees EOF
     // and the process exits cleanly. Without it, this test would hang forever.
     // `sh -c cat ""` invokes cat with no args ($0 set to "" but argv empty).
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.cat]
-tool = "sh"
-prompt = ""
-extra_args = ["-c", "cat"]
-"#,
-    );
+    let s = copy_scenario_temp("sh");
 
     let start = std::time::Instant::now();
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "cat",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "cat"])
         .assert()
         .success();
     assert!(
@@ -1133,24 +701,12 @@ extra_args = ["-c", "cat"]
 
 #[test]
 fn no_spinner_when_stderr_is_piped() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.t]
-tool = "echo"
-prompt = "hi"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     // assert_cmd captures stderr non-TTY; spinner braille glyphs must not appear.
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "t",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "t"])
         .assert()
         .success()
         .stderr(predicate::str::contains("⠋").not());
@@ -1158,31 +714,12 @@ prompt = "hi"
 
 #[test]
 fn idle_kill_triggers_retry_when_on_timeout_true() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.stalled]
-tool = "sh"
-prompt = ""
-extra_args = ["-c", "echo hi; sleep 30"]
-idle_kill = 1
-
-[tasks.stalled.retry]
-attempts = 2
-initial_delay = 1
-on_timeout = true
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     let start = std::time::Instant::now();
     amake()
-        .args([
-            "run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "stalled",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "stalled"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("retrying").and(predicate::str::contains("went idle")));
@@ -1196,25 +733,11 @@ on_timeout = true
 
 #[test]
 fn dry_run_emits_model_flag() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.greet]
-tool = "claude-code"
-prompt = "Hello"
-model = "sonnet"
-"#,
-    );
+    let s = copy_scenario_temp("claude");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "greet"])
         .assert()
         .success()
         .stdout(
@@ -1227,27 +750,11 @@ model = "sonnet"
 
 #[test]
 fn dry_run_inherits_default_model() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "claude-code"
-model = "opus"
-
-[tasks.greet]
-prompt = "Hello"
-"#,
-    );
+    let s = copy_scenario_temp("claude");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "greet-opus"])
         .assert()
         .success()
         .stdout(predicate::str::contains("--model").and(predicate::str::contains("opus")));
@@ -1255,28 +762,11 @@ prompt = "Hello"
 
 #[test]
 fn dry_run_task_model_overrides_default() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[defaults]
-tool = "claude-code"
-model = "opus"
-
-[tasks.greet]
-prompt = "Hello"
-model = "sonnet"
-"#,
-    );
+    let s = copy_scenario_temp("claude");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "greet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("sonnet").and(predicate::str::contains("opus").not()));
@@ -1284,26 +774,11 @@ model = "sonnet"
 
 #[test]
 fn extra_args_model_overrides_config_model() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.greet]
-tool = "claude-code"
-prompt = "Hello"
-model = "sonnet"
-extra_args = ["--model", "opus"]
-"#,
-    );
+    let s = copy_scenario_temp("claude");
 
     let output = amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "extra-args"])
         .assert()
         .success()
         .get_output()
@@ -1336,24 +811,11 @@ extra_args = ["--model", "opus"]
 
 #[test]
 fn dry_run_no_model_when_unset() {
-    let dir = TempDir::new().unwrap();
-    setup_amakefile(
-        &dir,
-        r#"
-[tasks.greet]
-tool = "claude-code"
-prompt = "Hello"
-"#,
-    );
+    let s = copy_scenario_temp("multi");
 
     amake()
-        .args([
-            "run",
-            "--dry-run",
-            "-f",
-            dir.path().join("Amakefile").to_str().unwrap(),
-            "greet",
-        ])
+        .current_dir(&s.project)
+        .args(["run", "--dry-run", "greet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("--model").not());

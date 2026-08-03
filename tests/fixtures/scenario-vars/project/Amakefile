@@ -1,0 +1,6 @@
+[vars]
+who = "world"
+
+[tasks.greet]
+tool = "echo"
+prompt = "Hello {{vars.who}}"

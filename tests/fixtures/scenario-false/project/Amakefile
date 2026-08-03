@@ -1,0 +1,15 @@
+[tasks.fail]
+tool = "false"
+prompt = ""
+
+[tasks.ok]
+tool = "echo"
+prompt = "still running"
+
+[tasks.always-fails]
+tool = "false"
+prompt = ""
+
+[tasks.always-fails.retry]
+attempts = 2
+initial_delay = 1
