@@ -1,6 +1,7 @@
 mod aider;
 mod claude_code;
 mod copilot;
+mod crush;
 mod generic;
 mod pi;
 mod sandbox;
@@ -40,6 +41,7 @@ impl AdapterRegistry {
         );
         adapters.insert("aider".into(), Box::new(aider::AiderAdapter));
         adapters.insert("copilot".into(), Box::new(copilot::CopilotAdapter));
+        adapters.insert("crush".into(), Box::new(crush::CrushAdapter));
         adapters.insert("pi".into(), Box::new(pi::PiAdapter));
         Self { adapters }
     }
@@ -309,6 +311,7 @@ mod tests {
         assert!(names.contains(&"claude-code"));
         assert!(names.contains(&"aider"));
         assert!(names.contains(&"copilot"));
+        assert!(names.contains(&"crush"));
         assert!(names.contains(&"pi"));
     }
 
@@ -552,5 +555,103 @@ mod tests {
         assert_eq!(args[pos + 1], "sonnet");
         assert_eq!(args[pos + 2], "--model");
         assert_eq!(args[pos + 3], "opus");
+    }
+
+    // -- crush adapter tests --
+
+    #[test]
+    fn crush_basic() {
+        let adapter = crush::CrushAdapter;
+        let task = make_task("Hello");
+        let cmd = adapter.build_command(&task, None, false, None);
+        assert_eq!(cmd.get_program(), "crush");
+        let args = get_args(&cmd);
+        assert_eq!(args, &["run", "Hello"]);
+    }
+
+    #[test]
+    fn crush_auto_approve() {
+        let adapter = crush::CrushAdapter;
+        let task = make_task("Hello");
+        // auto_approve=true emits a warning but passes no extra flags
+        let cmd = adapter.build_command(&task, None, true, None);
+        let args = get_args(&cmd);
+        assert_eq!(args, &["run", "Hello"]);
+    }
+
+    #[test]
+    fn crush_with_files_warns() {
+        let adapter = crush::CrushAdapter;
+        let mut task = make_task("Hello");
+        task.files = vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_eq!(args, &["run", "Hello"]);
+    }
+
+    #[test]
+    fn crush_with_extra_args() {
+        let adapter = crush::CrushAdapter;
+        let mut task = make_task("Fix it");
+        task.extra_args = vec!["--fast".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_eq!(args, &["--fast", "run", "Fix it"]);
+    }
+
+    #[test]
+    fn crush_sandbox_falls_back() {
+        let adapter = crush::CrushAdapter;
+        let task = make_task("Hello");
+        let sandbox = SandboxConfig::default();
+        let cmd = adapter.build_command(&task, None, true, Some(&sandbox));
+        // crush has no clampdown agent, so it falls back to running directly
+        assert_eq!(cmd.get_program(), "crush");
+    }
+
+    #[test]
+    fn crush_workdir_set_when_not_sandboxed() {
+        let adapter = crush::CrushAdapter;
+        let task = make_task("Hello");
+        let workdir = PathBuf::from("/my/project");
+        let cmd = adapter.build_command(&task, Some(&workdir), false, None);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/my/project")));
+    }
+
+    #[test]
+    fn crush_model_set() {
+        let adapter = crush::CrushAdapter;
+        let mut task = make_task("Hello");
+        task.model = Some("sonnet".into());
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_contains_pair(&args, "--model", "sonnet");
+    }
+
+    #[test]
+    fn crush_model_unset() {
+        let adapter = crush::CrushAdapter;
+        let task = make_task("Hello");
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        assert_does_not_contain(&args, "--model");
+    }
+
+    #[test]
+    fn crush_model_before_extra_args() {
+        let adapter = crush::CrushAdapter;
+        let mut task = make_task("Hi");
+        task.model = Some("claude".into());
+        task.extra_args = vec!["--model".into(), "gpt-4".into()];
+        let cmd = adapter.build_command(&task, None, false, None);
+        let args = get_args(&cmd);
+        // --model from config comes before the extra_args --model; both precede `run`
+        let pos = args
+            .iter()
+            .position(|a| a.to_string_lossy() == "--model")
+            .unwrap();
+        assert_eq!(args[pos + 1], "claude");
+        assert_eq!(args[pos + 2], "--model");
+        assert_eq!(args[pos + 3], "gpt-4");
     }
 }
