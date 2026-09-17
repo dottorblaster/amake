@@ -149,6 +149,7 @@ $ amake adapters
 aider
 claude-code
 copilot
+crush
 pi
 ```
 
@@ -157,6 +158,7 @@ pi
 | `claude-code` | `claude` | `--dangerously-skip-permissions` | `--model <name>` | Prompt via `--print` |
 | `aider` | `aider` | `--yes` | `--model <name>` | Prompt via `--message` |
 | `copilot` | `gh` | (none) | `--model <name>` | Runs `gh copilot suggest -t shell` |
+| `crush` | `crush` | (none) | `--model <name>` | Prompt via `run <prompt>...`; `task.files` and `auto_approve` are ignored with a warning |
 | `pi` | `pi` | (none) | `--model <name>` | Prompt via `-p`; context files via inline `@path` |
 
 If the tool name doesn't match a built-in, amake treats it as a bare binary and passes `extra_args` + prompt as a positional arg. Good enough for most things:
